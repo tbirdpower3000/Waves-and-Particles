@@ -5,8 +5,8 @@ No build step. Browser loads ES modules from `src/` via `<script type="module">`
 ## File ownership (one writer per file during r1)
 | Path | Owner |
 |---|---|
-| `src/fdtd.js`, `src/gpu/*` , `tests/fdtd*.test.js` | Field-core agent |
-| `src/signal.js`, `src/rng.js`, `src/gpu-signal/*`, `tests/signal*.test.js`, `tests/rng*.test.js`, `tests/gpu-signal-harness.js` | Signal agent |
+| `src/fdtd.js`, `src/gpu/*`, `tests/fdtd.test.js`, `tests/fdtd-gpu.test.js` | Field-core agent |
+| `src/signal.js`, `src/rng.js`, `src/gpu-signal/*`, `tests/signal*.test.js`, `tests/rng*.test.js`, `tests/gpu-signal-harness.js`, `rust/fdtd-wasm/*`, `src/wasm/*`, `tests/fdtd-wasm.test.js` | Signal agent |
 | `index.html`, `src/ui/*`, `.github/workflows/ci.yml`, `README.md`, `package.json`, `package-lock.json`, `tests/smoke*.test.js`, `tests/dev-mocks.js` | UI/CI agent |
 | `docs/fdtd-perf.md`, `docs/gpu-probe-stream.md` | Field-core agent |
 | `docs/*` | scaffold only, except `docs/fdtd-perf.md`, `docs/gpu-probe-stream.md`, and amendments Code Lab names in this file |
@@ -39,7 +39,12 @@ export function berTheory(scheme, ebn0dB)
 export function fftMag(sig)                                         // -> Float64Array
 ```
 ## src/gpu-signal/ (Signal agent, WebGPU compute)
-`export async function createGpuSignal(device)` compiles the shaders and returns the chain. Samples are f32 values in `Float64Array`. Stochastic methods take a uint32 `seed` (counter hash plus Box–Muller), not the CPU `rng`. `countErrors({ nBits, scheme, sps, ebn0dB, seed, h, offset, nSymbols, pRef, bitsPerSymbol })` keeps a BPSK/QPSK trial on the device and returns `{ errors, nBits, sigma }`. Omitted `pRef` is the mean power of the demodulated samples after `h`. `offset` and `nSymbols` follow r1.1 and throw when the window does not fit. Inputs above 4,194,240 elements or 128 MiB throw. `chirp` stays on the CPU. `ber` counts host arrays and throws on a length mismatch. `bufferCount()` is the number of buffers still held; `destroy()` destroys those buffers. Not imported by `index.html`.
+`export async function createGpuSignal(device)` compiles the shaders and returns the chain. Samples are f32 values in `Float64Array`. Stochastic methods take a uint32 `seed` (counter hash plus Box–Muller), not the CPU `rng`. `countErrors({ nBits, scheme, sps, ebn0dB, seed, h, offset, nSymbols, pRef, bitsPerSymbol })` keeps a BPSK/QPSK trial on the device and returns `{ errors, nBits, sigma }`. Omitted `pRef` is the mean power of the demodulated samples after `h`. `offset` and `nSymbols` follow r1.1 and throw when the window reaches the convolution tail. The first limit that fires is the dispatch cap of 4,194,240 elements (65535 workgroups of 64). A buffer of that many f32 values is 16 MiB, so the 128 MiB storage-binding cap is not the one a normal call hits. `chirp` stays on the CPU. `ber` counts host arrays and throws on a length mismatch. `bufferCount()` is the number of buffers still held; `destroy()` destroys those buffers. Not imported by `index.html`.
+
+## rust/fdtd-wasm and src/wasm (Signal agent)
+`createFDTD()` in `src/wasm/index.js` loads the committed `src/wasm/pkg` module and falls back to `src/fdtd.js` if that fails. `loadWasmFDTD()` throws instead of falling back. `createGrid` requires integer `nx` and `ny` and rejects a side above 2048, with a JS error (the wasm trap is not the API). The page does not import this module.
+
+Build with Rust 1.83.0 and the wasm-bindgen 0.2.100 musl binary (commit 2405ec2b4). `bash rust/fdtd-wasm/ci.sh` checks that binary's sha256, rebuilds with `--locked` and remapped paths, and fails if `src/wasm/pkg` differs. `bash rust/fdtd-wasm/build.sh` is the same compile once that binary is on `PATH`. See `rust/fdtd-wasm/README.md`.
 
 ## src/rng.js
 `export function makeRng(seed)` -> `{ uniform(), normal() }`, deterministic in Node and browser.

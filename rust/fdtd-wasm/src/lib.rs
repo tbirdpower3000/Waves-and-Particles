@@ -566,6 +566,15 @@ pub fn create_grid(
         "scalar" => false,
         other => return Err(JsValue::from_str(&format!("mode must be 'tmz' or 'scalar', got {other}"))),
     };
+    const GRID_CAP: u32 = 2048;
+    if nx > GRID_CAP || ny > GRID_CAP {
+        return Err(JsValue::from_str(&format!(
+            "grid {nx}x{ny} exceeds the {GRID_CAP} cap"
+        )));
+    }
+    let cells = (nx as usize).checked_mul(ny as usize).ok_or_else(|| {
+        JsValue::from_str(&format!("grid {nx}x{ny} overflows"))
+    })?;
     let nx = nx as usize;
     let ny = ny as usize;
     let min_ny = if periodic_y { 2 } else { 3 };
@@ -582,7 +591,7 @@ pub fn create_grid(
         return Err(JsValue::from_str("pml thickness leaves no interior"));
     }
     let dt = courant_dt(dx, dy, None, None)?;
-    let n = nx * ny;
+    let n = cells;
     let x_axis = fill_axis(nx, dx, pml_cells, dt);
     let y_axis = fill_axis(ny, dy, if periodic_y { 0 } else { pml_cells }, dt);
     let mu = if mode_tmz { MU0 } else { 1.0 };

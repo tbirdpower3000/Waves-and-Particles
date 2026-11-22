@@ -49,7 +49,8 @@ export async function createGpuSignal(device) {
   const ber = await pipeline(device, berWgsl, 'ber_main');
   const fir = await pipeline(device, firWgsl, 'fir_main');
   const fftRev = await pipeline(device, fftWgsl, 'fft_reverse');
-  const fftIter = await pipeline(device, fftWgsl, 'fft_iter');
+  const fftTile = await pipeline(device, fftWgsl, 'fft_tile');
+  const fftStage = await pipeline(device, fftWgsl, 'fft_stage');
   const fftMagPipe = await pipeline(device, fftWgsl, 'fft_mag');
   const powerPipe = await pipeline(device, berWgsl, 'power_main');
   const awgnPipe = await pipeline(device, awgnWgsl, 'awgn_main');
@@ -298,7 +299,8 @@ export async function createGpuSignal(device) {
 
     async convolveChannel(sig, h) {
       const n = pairLength(sig);
-      if (!h || h.length === 0 || n === 0) return { i: new Float64Array(0), q: new Float64Array(0) };
+      if (h == null) throw new Error('h must contain at least one tap');
+      if (h.length === 0 || n === 0) return { i: new Float64Array(0), q: new Float64Array(0) };
       const outLen = n + h.length - 1;
       guardElements(outLen, 'convolveChannel');
       guardBytes(outLen * 4, 'convolveChannel');
@@ -371,11 +373,22 @@ export async function createGpuSignal(device) {
           list.push({ binding: 4, resource: { buffer: twReBuf } });
           list.push({ binding: 5, resource: { buffer: twImBuf } });
         }
-        return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: list });
+        return {
+          params,
+          group: device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: list }),
+        };
       };
-      dispatch(fftRev, fftGroup(fftRev, 2, false, false), groupsOf(n));
-      dispatch(fftIter, fftGroup(fftIter, n, false, true), 1);
-      dispatch(fftMagPipe, fftGroup(fftMagPipe, n, true, false), groupsOf(n));
+      const stage = fftGroup(fftStage, 2, false, true);
+      const tile = fftGroup(fftTile, 2, false, true);
+      dispatch(fftRev, fftGroup(fftRev, 2, false, false).group, groupsOf(n));
+      if (n >= 64) dispatch(fftTile, tile.group, n / 64);
+      for (let len = n >= 64 ? 128 : 2; len <= n; len <<= 1) {
+        const params = fftParams(n, len, bits);
+        device.queue.writeBuffer(stage.params, 0, params);
+        device.queue.writeBuffer(tile.params, 0, params);
+        dispatch(fftStage, stage.group, Math.max(1, Math.ceil(n / 2 / 64)));
+      }
+      dispatch(fftMagPipe, fftGroup(fftMagPipe, n, true, false).group, groupsOf(n));
       const mag = await readF32(magBuf, n);
       drop(...owned);
       return mag;
@@ -426,7 +439,7 @@ export async function createGpuSignal(device) {
       requireSps(sps);
       requireFinite(ebn0dB, 'ebn0dB');
       requireCount(nBits, 'nBits');
-      if (!h || h.length === 0) throw new Error('h must contain at least one tap');
+      if (h == null || h.length === 0) throw new Error('h must contain at least one tap');
       if (nSymbols !== undefined && (!Number.isInteger(nSymbols) || nSymbols < 0)) {
         throw new Error(`nSymbols must be a non-negative integer, got ${nSymbols}`);
       }
@@ -436,10 +449,13 @@ export async function createGpuSignal(device) {
       if (!Number.isInteger(offset) || offset < 0 || offset > outLen) {
         throw new Error(`offset must be an integer in [0, ${outLen}], got ${offset}`);
       }
-      const room = Math.floor((outLen - offset) / sps);
+      // Samples at nTx and later are the convolution tail. A symbol window
+      // that reads them is not a transmitted symbol.
+      const tailAt = Math.min(outLen, nTx);
+      const room = offset > tailAt ? 0 : Math.floor((tailAt - offset) / sps);
       const symbols = nSymbols === undefined ? txSymbols : nSymbols;
       if (symbols > room) {
-        throw new Error(`nSymbols ${symbols} does not fit at offset ${offset} (room for ${room})`);
+        throw new Error(`nSymbols ${symbols} reaches the channel tail at offset ${offset} (room for ${room})`);
       }
       guardElements(Math.max(symbols, nTx, outLen), 'countErrors');
       const compared = symbols * k;

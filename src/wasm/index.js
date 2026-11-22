@@ -90,13 +90,25 @@ function bindWasm(glue) {
       if (opts.storage === 'float32') {
         throw new Error('wasm solver is float64 only');
       }
+      const periodicY = !!opts.periodicY;
+      const minNy = periodicY ? 2 : 3;
       const nx = opts.nx;
       const ny = opts.ny;
+      if (!Number.isInteger(nx) || !Number.isInteger(ny) || nx < 3 || ny < minNy) {
+        throw new Error(`nx and ny must be integers (nx >= 3, ny >= ${minNy})`);
+      }
+      const cap = 2048;
+      if (nx > cap || ny > cap) {
+        throw new Error(`grid ${nx}x${ny} exceeds the ${cap} cap`);
+      }
       const dx = opts.dx;
       const dy = opts.dy === undefined ? dx : opts.dy;
+      if (!(dx > 0) || !(dy > 0)) throw new Error('dx and dy must be positive');
       const mode = opts.mode || 'tmz';
       const pml = opts.pml === undefined ? 10 : opts.pml;
-      const periodicY = !!opts.periodicY;
+      if (!Number.isInteger(pml) || pml < 0) {
+        throw new Error(`pml must be an integer >= 0, got ${pml}`);
+      }
       const raw = glue.create_grid(nx, ny, dx, dy, mode, pml, periodicY);
       return new WasmGrid(raw, { nx, ny, dx, dy, mode, pml, periodicY });
     },

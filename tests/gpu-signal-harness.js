@@ -64,8 +64,14 @@ function adapterReport(adapter) {
   const name = architecture && description.toLowerCase().indexOf(architecture.toLowerCase()) === -1
     ? (description + ' ' + architecture).trim()
     : (description || architecture || vendor || 'unknown');
+  let label = name;
+  if (/swiftshader/i.test(blob)) label = 'software renderer (SwiftShader)';
+  else if (/llvmpipe/i.test(blob)) label = 'software renderer (llvmpipe)';
+  else if (/softpipe/i.test(blob)) label = 'software renderer (softpipe)';
+  else if (software) label = 'software renderer (software)';
   return {
     description: name,
+    label,
     vendor,
     architecture,
     device: deviceName,
@@ -233,6 +239,63 @@ try {
         randQ[i] = state / 2 ** 32 * 2 - 1;
       }
       const randRel = relL2(fftMag({ i: randI, q: randQ }), await gpu.fftMag({ i: randI, q: randQ }));
+      const tailSymbols = await threw(
+        () => gpu.countErrors({
+          nBits: 32, scheme: 'bpsk', ebn0dB: 6, seed: 1, h: [1, 0.25, 0.1, 0], nSymbols: 33,
+        }),
+        /tail/,
+      );
+      const nullH = await threw(
+        () => gpu.convolveChannel({ i: new Float64Array([1, 0]), q: new Float64Array([0, 0]) }, null),
+        /h must/,
+      );
+      const acN = 8192;
+      const ac = await gpu.awgn(
+        { i: new Float64Array(acN), q: new Float64Array(acN) },
+        { ebn0dB: 6, bitsPerSymbol: 1, sps: 1, seed: 99, pRef: 1 },
+      );
+      let acMean = 0;
+      for (let i = 0; i < acN; i++) acMean += ac.i[i];
+      acMean /= acN;
+      let acVar = 0;
+      let acCov = 0;
+      for (let i = 0; i < acN; i++) {
+        const d = ac.i[i] - acMean;
+        acVar += d * d;
+        if (i + 1 < acN) acCov += d * (ac.i[i + 1] - acMean);
+      }
+      const acZ = (acCov / acVar) * Math.sqrt(acN - 1);
+      const sweep = [];
+      for (const spec of [
+        { db: 0, nBits: 100000 },
+        { db: 4, nBits: 100000 },
+        { db: 8, nBits: 400000 },
+      ]) {
+        const row = await gpu.countErrors({
+          nBits: spec.nBits, scheme: 'bpsk', sps: 1, ebn0dB: spec.db, seed: 11, h: [1], pRef: 1,
+        });
+        sweep.push({ db: spec.db, errors: row.errors, nBits: row.nBits });
+      }
+      async function timeFft(n) {
+        const i = new Float64Array(n);
+        const q = new Float64Array(n);
+        let s = 7;
+        for (let k = 0; k < n; k++) {
+          s = (Math.imul(s, 1103515245) + 12345) >>> 0;
+          i[k] = s / 4294967296 * 2 - 1;
+          s = (Math.imul(s, 1103515245) + 12345) >>> 0;
+          q[k] = s / 4294967296 * 2 - 1;
+        }
+        const c0 = performance.now();
+        const cpu = fftMag({ i, q });
+        const cpuMs = performance.now() - c0;
+        const g0 = performance.now();
+        const gpuMag = await gpu.fftMag({ i, q });
+        const gpuMs = performance.now() - g0;
+        return { n, cpuMs, gpuMs, rel: relL2(cpu, gpuMag) };
+      }
+      const fft16 = await timeFft(65536);
+      const fft21 = await timeFft(2097152);
       const liveBefore = gpu.bufferCount();
       gpu.destroy();
       const liveAfter = gpu.bufferCount();
@@ -266,6 +329,12 @@ try {
         loudBits: loud.nBits,
         swapped,
         randRel,
+        tailSymbols,
+        nullH,
+        acZ,
+        sweep,
+        fft16,
+        fft21,
         liveBefore,
         liveAfter,
         afterDestroy: afterDestroy.errors,
