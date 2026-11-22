@@ -119,6 +119,8 @@ export async function createGpuView(canvas, grid, opts = {}) {
   const view = stepper.createView(canvas, opts);
   view.adapter = stepper.adapter;
   view.probeStream = stepper.probeStream ?? null;
+  Object.defineProperty(view, "device", { get: () => stepper.device ?? null });
+  Object.defineProperty(view, "framesInFlight", { get: () => stepper.framesInFlight ?? 0 });
   view.syncMaterials = (next) => stepper.syncMaterials(next ?? grid);
   Object.defineProperty(view, "materialBytesUploaded", {
     get: () => stepper.materialBytesUploaded,

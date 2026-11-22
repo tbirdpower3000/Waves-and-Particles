@@ -174,10 +174,12 @@ precision highp float;
 precision highp int;
 uniform sampler2D uField;
 uniform float uScale;
+uniform int uNy;
 layout(location=0) out vec4 o;
 void main() {
   ivec2 ij = ivec2(gl_FragCoord.xy);
-  float v = texelFetch(uField, ij, 0).r;
+  int j = uNy - 1 - ij.y;
+  float v = texelFetch(uField, ivec2(ij.x, j), 0).r;
   float t = clamp(0.5 + 0.5 * v / uScale, 0.0, 1.0);
   o = vec4(t, t, t, 1.0);
 }
@@ -302,6 +304,7 @@ export function createWebGL2Stepper(grid) {
     depth: false,
     stencil: false,
     premultipliedAlpha: false,
+    preserveDrawingBuffer: true,
   });
   if (!gl) return null;
   if (!gl.getExtension("EXT_color_buffer_float")) return null;
@@ -472,6 +475,7 @@ export function createWebGL2Stepper(grid) {
     const nStep = count | 0;
     syncMaterials();
     for (let s = 0; s < nStep; s++) {
+      if (probes.length && head - drained >= RING) drainProbes();
       time += grid.dt;
       delta.fill(0);
       for (let q = 0; q < sources.length; q++) {
@@ -594,32 +598,44 @@ export function createWebGL2Stepper(grid) {
     gl.useProgram(progColor);
     gl.uniform1i(gl.getUniformLocation(progColor, "uField"), 0);
     gl.uniform1f(gl.getUniformLocation(progColor, "uScale"), scale);
+    gl.uniform1i(gl.getUniformLocation(progColor, "uNy"), ny);
     if (viewCanvas) {
       viewCanvas.width = nx;
       viewCanvas.height = ny;
     }
 
     function present() {
-      gl.bindFramebuffer(gl.FRAMEBUFFER, colorFb);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.viewport(0, 0, nx, ny);
-      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      gl.disable(gl.BLEND);
       bind(gl, 0, field[0].textures[0]);
       gl.useProgram(progColor);
       gl.drawArrays(gl.TRIANGLES, 0, 3);
       if (viewCanvas && viewCanvas !== canvas) {
-        const ctx = viewCanvas.getContext("2d");
-        if (ctx) ctx.drawImage(canvas, 0, 0);
+        const ctx = viewCanvas.getContext("2d", { willReadFrequently: true });
+        if (ctx) {
+          viewCanvas.width = nx;
+          viewCanvas.height = ny;
+          ctx.drawImage(canvas, 0, 0, nx, ny);
+        }
       }
     }
 
     function frame(count) {
       runSteps(count == null ? stepsPerFrame : count | 0);
+      drainProbes();
       present();
     }
 
     function readDrawn() {
+      const shown = viewCanvas && viewCanvas !== canvas ? viewCanvas : canvas;
+      if (shown !== canvas) {
+        const ctx = shown.getContext("2d", { willReadFrequently: true });
+        const image = ctx.getImageData(0, 0, nx, ny);
+        return Promise.resolve(new Uint8ClampedArray(image.data));
+      }
       const pixels = new Uint8Array(nx * ny * 4);
-      gl.bindFramebuffer(gl.FRAMEBUFFER, colorFb);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, null);
       gl.readPixels(0, 0, nx, ny, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
       return Promise.resolve(new Uint8ClampedArray(pixels));
     }

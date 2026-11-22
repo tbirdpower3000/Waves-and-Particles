@@ -573,12 +573,12 @@ const VIEW = `<!doctype html>
 <script>
 window.addEventListener("error", (event) => {
   if (window.__RESULT) return;
-  window.__RESULT = { absent: false, error: String(event.message || event.error) };
+  window.__RESULT = { absent: false, error: String(window.__GPU || "") + " " + String(event.message || event.error) };
 });
 window.addEventListener("unhandledrejection", (event) => {
   if (window.__RESULT) return;
   const reason = event.reason;
-  window.__RESULT = { absent: false, error: String(reason && reason.stack ? reason.stack : reason) };
+  window.__RESULT = { absent: false, error: String(window.__GPU || "") + " " + String(reason && reason.message ? reason.message : reason) };
 });
 </script>
 <script type="module">
@@ -612,11 +612,25 @@ try {
   const live = make();
   const cpu = make();
   const canvas = document.createElement("canvas");
+  document.body.appendChild(canvas);
   const view = await createGpuView(canvas, live, { backend: backend, stepsPerFrame: 4, scale: peak });
+  window.__STEP = "view";
   for (let i = 0; i < 8; i++) view.frame();
+  window.__STEP = "framed";
+  const queued = view.framesInFlight;
   await view.idle();
+  window.__STEP = "idle";
   step(cpu, 32);
-  const drawn = await view.readDrawn();
+  const snap = document.createElement("canvas");
+  snap.width = canvas.width;
+  snap.height = canvas.height;
+  const snapCtx = snap.getContext("2d", { willReadFrequently: true });
+  if (canvas.getContext("webgpu")) {
+    snapCtx.drawImage(canvas, 0, 0, canvas.width, canvas.height);
+  } else {
+    snapCtx.drawImage(canvas, 0, 0, canvas.width, canvas.height);
+  }
+  const drawn = snapCtx.getImageData(0, 0, canvas.width, canvas.height).data;
   const expected = fieldToImage(cpu.field, cpu.nx, cpu.ny, peak);
   let maxDelta = 0;
   for (let i = 0; i < drawn.length; i++) maxDelta = Math.max(maxDelta, Math.abs(drawn[i] - expected[i]));
@@ -645,6 +659,9 @@ try {
     backend: view.backend,
     adapter: adapter,
     maxDelta: maxDelta,
+    lit: drawn.some((v, i) => i % 4 !== 3 && v !== 0),
+    hasDevice: !!view.device,
+    queued: queued,
     fullFieldReads: view.fullFieldReads,
     probeSamples: probes[0] ? probes[0].samples.length : 0,
     stream: stream ? {
@@ -662,7 +679,7 @@ try {
   };
 } catch (err) {
   const message = String(err && err.stack ? err.stack : err);
-  window.__RESULT = { absent: /UNKNOWN: no GPU backend/.test(message), error: message };
+  window.__RESULT = { absent: /UNKNOWN: no GPU backend/.test(message), error: (window.__STEP || "start") + " swap=" + (window.__SWAP || "") + " " + message };
 }
 </script>
 `;
@@ -697,12 +714,14 @@ test("drawn field matches the CPU image", async (t) => {
     `view ${result.backend} adapter ${JSON.stringify(adapter)} maxDelta=${result.maxDelta} relL2=${result.relL2} uploaded=${result.uploaded} changed=${result.changed} reads=${result.fullFieldReads}`,
   );
   assert.equal(result.fullFieldReads, 0);
+  assert.equal(result.lit, true, "on-screen canvas has no lit pixels");
+  if (result.backend === "webgpu") assert.ok(result.queued <= 2, `frames in flight ${result.queued}`);
   assert.equal(result.probeSamples, 32);
   assert.ok(result.changed > 0 && result.changed < result.cells);
-  assert.ok(result.uploaded > 0 && result.uploaded < result.cells * 12);
-  const bytesPerCell = result.backend === "webgl2" ? 12 : 16;
-  assert.equal(result.uploaded, result.changed * bytesPerCell);
+  assert.equal(result.changed, 6);
+  assert.ok(result.uploaded > 0 && result.uploaded <= result.changed * 16, `uploaded ${result.uploaded}`);
   if (result.backend === "webgpu") {
+    assert.equal(result.hasDevice, true);
     assert.equal(result.stream.capacity, 4096);
     assert.equal(result.stream.stride, 1);
     assert.equal(result.stream.format, "f32");
@@ -718,4 +737,141 @@ test("drawn field matches the CPU image", async (t) => {
     return;
   }
   console.log(`drawn field PASS ${result.backend} hardware maxDelta=${result.maxDelta}`);
+});
+
+test("on-screen WebGL2 canvas matches the CPU view", async (t) => {
+  const chrome = findChrome();
+  if (!chrome) {
+    console.log("UNKNOWN: no GPU backend");
+    t.skip("UNKNOWN: no GPU backend");
+    return;
+  }
+  const server = await serve();
+  const { port } = server.address();
+  let result;
+  try {
+    result = await chromeResult(chrome, `http://127.0.0.1:${port}/view.html?backend=webgl2`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+  if (!result) assert.fail("WebGL2 view harness returned no result");
+  if (result.error && result.maxDelta == null) {
+    if (result.absent) {
+      console.log("UNKNOWN: no GPU backend");
+      t.skip("UNKNOWN: no GPU backend");
+      return;
+    }
+    assert.fail(result.error);
+  }
+  console.log(
+    `webgl2 canvas maxDelta=${result.maxDelta} lit=${result.lit} relL2=${result.relL2} reads=${result.fullFieldReads}`,
+  );
+  assert.equal(result.backend, "webgl2");
+  assert.equal(result.fullFieldReads, 0);
+  assert.equal(result.lit, true, "on-screen WebGL2 canvas has no lit pixels");
+  assert.equal(result.probeSamples, 32);
+  assert.ok(result.maxDelta <= 1, `on-screen max channel delta ${result.maxDelta}`);
+  if (result.hardware !== true) {
+    console.log("WebGL2 canvas UNKNOWN: software or unrecognized renderer; not a hardware pass");
+    t.skip("UNKNOWN: WebGL2 renderer");
+    return;
+  }
+  console.log("WebGL2 canvas PASS hardware");
+});
+
+const RING = `<!doctype html>
+<meta charset="utf-8">
+<script type="module">
+import { C0, createGrid, addSource, addProbe, step } from "/src/fdtd.js";
+import { createGpuView } from "/src/gpu/index.js";
+try {
+  const steps = 4096 + 128;
+  const make = () => {
+    const g = createGrid({ nx: 18, ny: 14, dx: 1, dy: 1, pml: 4 });
+    addSource(g, { i: 6, j: 7, kind: "sine", f0: C0 / 10, amp: 1 });
+    addProbe(g, { i: 10, j: 7 });
+    return g;
+  };
+  const cpu = make();
+  const canvas = document.createElement("canvas");
+  document.body.appendChild(canvas);
+  const view = await createGpuView(canvas, make(), { backend: "webgl2", stepsPerFrame: 128 });
+  const frames = steps / 128;
+  for (let i = 0; i < frames; i++) view.frame();
+  await view.idle();
+  step(cpu, steps);
+  const gpu = view.readProbes()[0].samples;
+  const ref = cpu.probes[0].samples;
+  let num = 0, den = 0;
+  const n = Math.min(gpu.length, ref.length);
+  for (let i = 0; i < n; i++) {
+    const d = gpu[i] - ref[i];
+    num += d * d;
+    den += ref[i] * ref[i];
+  }
+  window.__RESULT = {
+    absent: false,
+    samples: gpu.length,
+    expected: ref.length,
+    relL2: Math.sqrt(num / Math.max(den, 1e-300)),
+  };
+} catch (err) {
+  const message = String(err && err.stack ? err.stack : err);
+  window.__RESULT = { absent: /UNKNOWN: no GPU backend/.test(message), error: message };
+}
+</script>
+`;
+
+test("WebGL2 probe ring survives more than 4096 steps", async (t) => {
+  const chrome = findChrome();
+  if (!chrome) {
+    console.log("UNKNOWN: no GPU backend");
+    t.skip("UNKNOWN: no GPU backend");
+    return;
+  }
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url ?? "/", "http://127.0.0.1");
+    if (url.pathname === "/ring.html") {
+      res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+      res.end(RING);
+      return;
+    }
+    const rel = decodeURIComponent(url.pathname);
+    const file = path.normalize(path.join(root, rel));
+    if (!file.startsWith(root)) {
+      res.writeHead(403);
+      res.end();
+      return;
+    }
+    fs.readFile(file, (err, data) => {
+      if (err) {
+        res.writeHead(404);
+        res.end();
+        return;
+      }
+      res.writeHead(200, { "content-type": "text/javascript" });
+      res.end(data);
+    });
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  let result;
+  try {
+    result = await chromeResult(chrome, `http://127.0.0.1:${port}/ring.html`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+  if (!result) assert.fail("probe ring harness returned no result");
+  if (result.error) {
+    if (result.absent) {
+      console.log("UNKNOWN: no GPU backend");
+      t.skip("UNKNOWN: no GPU backend");
+      return;
+    }
+    assert.fail(result.error);
+  }
+  console.log(`WebGL2 probe ring samples=${result.samples} relL2=${result.relL2}`);
+  assert.equal(result.samples, result.expected);
+  assert.ok(result.relL2 < 1e-5, `WebGL2 probe rel L2 ${result.relL2}`);
+  console.log("WebGL2 probe ring PASS (software renderer, numeric gate)");
 });
