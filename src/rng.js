@@ -15,7 +15,7 @@
 const WARMUP = 12;
 
 // Murmur-style splitmix32. Returns uint32s in [0, 2^32).
-function splitmix32(seed) {
+export function splitmix32(seed) {
   let state = seed >>> 0;
   return () => {
     state = (state + 0x9e3779b9) >>> 0;
@@ -27,7 +27,7 @@ function splitmix32(seed) {
 }
 
 // sfc32 seeded from `seed`. The returned function yields uint32s after warm-up.
-function sfc32(seed) {
+export function sfc32(seed) {
   const mix = splitmix32(seed);
   let a = mix() | 0;
   let b = mix() | 0;

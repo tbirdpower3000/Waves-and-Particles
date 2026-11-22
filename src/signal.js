@@ -163,14 +163,19 @@ export function convolveChannel(sig, h) {
  * Traps this rejects: dropping the 2 (sigma^2 = N0 per rail) is -3 dB;
  * omitting k uses Es/N0 as Eb/N0 and is -3 dB for QPSK; omitting L understates
  * sigma by sqrt(L) (+10 log10(L) dB, about +9 dB at L = 8). A pure channel
- * gain scales Pbar, so sigma tracks the received amplitude. Multipath is not
- * equalized; the Q(·) curve assumes h = delta.
+ * gain scales Pbar, so sigma tracks the received amplitude when pRef is omitted.
+ * Multipath is not equalized; the Q(·) curve assumes one cursor, no ISI.
+ *
+ * pRef, when passed, replaces the measured buffer mean. Pass the mean power of
+ * the symbol region demodulate will read (offset through nSymbols * sps
+ * samples). A convolution tail of zeros, or a run of leading zeros from a
+ * delay, lowers the mean of the whole buffer and would otherwise shrink sigma.
  *
  * @param {{ i: ArrayLike<number>, q: ArrayLike<number> }} sig
- * @param {{ ebn0dB: number, bitsPerSymbol: number, sps: number, rng: { normal: () => number } }} opts
+ * @param {{ ebn0dB: number, bitsPerSymbol: number, sps: number, rng: { normal: () => number }, pRef?: number }} opts
  * @returns {{ i: Float64Array, q: Float64Array }}
  */
-export function awgn(sig, { ebn0dB, bitsPerSymbol, sps, rng }) {
+export function awgn(sig, { ebn0dB, bitsPerSymbol, sps, rng, pRef }) {
   const n = requirePair(sig);
   requireSps(sps);
   if (!Number.isFinite(ebn0dB)) {
@@ -183,13 +188,21 @@ export function awgn(sig, { ebn0dB, bitsPerSymbol, sps, rng }) {
   const q = new Float64Array(n);
   if (n === 0) return { i, q };
 
-  let energy = 0;
   const srcI = sig.i;
   const srcQ = sig.q;
-  for (let nIdx = 0; nIdx < n; nIdx++) {
-    energy += srcI[nIdx] * srcI[nIdx] + srcQ[nIdx] * srcQ[nIdx];
+  let pBar;
+  if (pRef !== undefined) {
+    if (typeof pRef !== 'number' || !Number.isFinite(pRef) || pRef < 0) {
+      throw new Error(`pRef must be a finite number >= 0, got ${pRef}`);
+    }
+    pBar = pRef;
+  } else {
+    let energy = 0;
+    for (let nIdx = 0; nIdx < n; nIdx++) {
+      energy += srcI[nIdx] * srcI[nIdx] + srcQ[nIdx] * srcQ[nIdx];
+    }
+    pBar = energy / n;
   }
-  const pBar = energy / n;
   const gamma = 10 ** (ebn0dB / 10);
   const sigma = Math.sqrt((pBar * sps) / (2 * bitsPerSymbol * gamma));
   for (let nIdx = 0; nIdx < n; nIdx++) {
@@ -200,25 +213,38 @@ export function awgn(sig, { ebn0dB, bitsPerSymbol, sps, rng }) {
 }
 
 /**
- * Integrate-and-dump, one decision per symbol, aligned to sample 0.
- * BPSK reads I. QPSK reads I then Q, inverse of modulate().
+ * Integrate-and-dump. BPSK reads I. QPSK reads I then Q, inverse of modulate().
+ * `offset` is the first sample of symbol 0 (default 0). `nSymbols`, when
+ * passed, is how many symbols to decode; the convolution tail after that
+ * window is ignored. When omitted, every full symbol that fits from `offset`
+ * to the end of the buffer is decoded.
  *
  * @param {{ i: ArrayLike<number>, q: ArrayLike<number> }} sig
- * @param {{ scheme: 'bpsk' | 'qpsk', sps: number }} opts
+ * @param {{ scheme: 'bpsk' | 'qpsk', sps: number, offset?: number, nSymbols?: number }} opts
  * @returns {Uint8Array}
  */
-export function demodulate(sig, { scheme, sps }) {
+export function demodulate(sig, { scheme, sps, offset = 0, nSymbols } = {}) {
   requireScheme(scheme);
   requireSps(sps);
   const n = requirePair(sig);
-  const nSym = Math.floor(n / sps);
+  if (!Number.isInteger(offset) || offset < 0 || offset > n) {
+    throw new Error(`offset must be an integer in [0, ${n}], got ${offset}`);
+  }
+  const room = Math.floor((n - offset) / sps);
+  if (nSymbols !== undefined && (!Number.isInteger(nSymbols) || nSymbols < 0)) {
+    throw new Error(`nSymbols must be a non-negative integer, got ${nSymbols}`);
+  }
+  const nSym = nSymbols === undefined ? room : nSymbols;
+  if (nSym > room) {
+    throw new Error(`nSymbols ${nSym} does not fit at offset ${offset} (room for ${room})`);
+  }
   const srcI = sig.i;
   const srcQ = sig.q;
   if (scheme === 'bpsk') {
     const bits = new Uint8Array(nSym);
     for (let s = 0; s < nSym; s++) {
       let acc = 0;
-      const off = s * sps;
+      const off = offset + s * sps;
       for (let t = 0; t < sps; t++) acc += srcI[off + t];
       bits[s] = acc >= 0 ? 0 : 1;
     }
@@ -228,7 +254,7 @@ export function demodulate(sig, { scheme, sps }) {
   for (let s = 0; s < nSym; s++) {
     let accI = 0;
     let accQ = 0;
-    const off = s * sps;
+    const off = offset + s * sps;
     for (let t = 0; t < sps; t++) {
       accI += srcI[off + t];
       accQ += srcQ[off + t];
@@ -240,17 +266,20 @@ export function demodulate(sig, { scheme, sps }) {
 }
 
 /**
- * Bit error rate. Unequal lengths count the extra bits as errors.
+ * Bit error rate. Lengths must match: a demodulator that emitted the
+ * convolution tail as extra bits is a caller error, not a BER.
  * @param {ArrayLike<number>} txBits
  * @param {ArrayLike<number>} rxBits
  * @returns {number}
  */
 export function ber(txBits, rxBits) {
-  const n = Math.max(txBits.length, rxBits.length);
+  if (txBits.length !== rxBits.length) {
+    throw new Error(`bit length mismatch: ${txBits.length} vs ${rxBits.length}`);
+  }
+  const n = txBits.length;
   if (n === 0) return 0;
-  const m = Math.min(txBits.length, rxBits.length);
-  let errors = n - m;
-  for (let i = 0; i < m; i++) {
+  let errors = 0;
+  for (let i = 0; i < n; i++) {
     if ((txBits[i] ? 1 : 0) !== (rxBits[i] ? 1 : 0)) errors++;
   }
   return errors / n;

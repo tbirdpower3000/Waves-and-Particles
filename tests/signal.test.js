@@ -70,6 +70,39 @@ function meanPower(sig) {
   return energy / sig.i.length;
 }
 
+function regionPower(sig, offset, len) {
+  let energy = 0;
+  for (let i = 0; i < len; i++) {
+    const at = offset + i;
+    energy += sig.i[at] * sig.i[at] + sig.q[at] * sig.q[at];
+  }
+  return energy / len;
+}
+
+function normalizedTaps(taps) {
+  let energy = 0;
+  for (const tap of taps) energy += tap * tap;
+  const scale = Math.sqrt(energy);
+  return Float64Array.from(taps, (tap) => tap / scale);
+}
+
+// BPSK, sps 8, N = 200k, 6 dB. offset is the main-tap index.
+// pRef is the power of the samples demodulate reads, not the padded buffer.
+function errorsAligned({ h, offset }) {
+  const sps = 8;
+  const nBits = N_CI;
+  const rng = makeRng(SEED);
+  const tx = bitsRandom(nBits, rng);
+  const ch = convolveChannel(modulate(tx, { scheme: 'bpsk', sps }), h);
+  const span = nBits * sps;
+  const pRef = regionPower(ch, offset, span);
+  const noisy = awgn(ch, { ebn0dB: 6, bitsPerSymbol: 1, sps, rng, pRef });
+  const rx = demodulate(noisy, { scheme: 'bpsk', sps, offset, nSymbols: nBits });
+  let errors = 0;
+  for (let i = 0; i < tx.length; i++) if (tx[i] !== rx[i]) errors++;
+  return { errors, pRef, fullPower: meanPower(ch) };
+}
+
 // Ratio of measured per-rail noise power to Pbar*L / (2*k*gamma).
 function noiseRatios(sig, { ebn0dB, bitsPerSymbol, sps, seed }) {
   const y = awgn(sig, { ebn0dB, bitsPerSymbol, sps, rng: makeRng(seed) });
@@ -101,12 +134,12 @@ test('theoretical BER matches BPSK and Gray QPSK at 6, 9 and 10 dB', () => {
   }
 });
 
-test('ber() counts disagreements and dropped bits', () => {
+test('ber() counts disagreements and throws on a length mismatch', () => {
   assert.equal(ber([0, 1, 0, 1], [0, 1, 0, 1]), 0);
   assert.equal(ber([0, 1, 0, 1], [0, 1, 1, 1]), 0.25);
   assert.equal(ber([0, 0], [1, 1]), 1);
-  assert.equal(ber([0, 1, 0], [0, 1]), 1 / 3);
   assert.equal(ber([], []), 0);
+  assert.throws(() => ber([0, 1, 0], [0, 1]), /bit length mismatch: 3 vs 2/);
 });
 
 test('bitsRandom is reproducible and binary', () => {
@@ -244,6 +277,51 @@ test('trap: channel gain ||h||^2 = 2 is absorbed by received Pbar', () => {
   assert.ok(Math.abs(meanPower(rx) - 2) < 1e-9, `Pbar ${meanPower(rx)}`);
   const ratios = noiseRatios(rx, { ebn0dB: 6, bitsPerSymbol: 1, sps: 1, seed: 11 });
   assertChi(ratios, 'gain');
+});
+
+test('BPSK 6 dB stays in band through a 3-sample delay', () => {
+  const h = new Float64Array([0, 0, 0, 1]);
+  const { errors } = errorsAligned({ h, offset: 3 });
+  assertBand(errors);
+});
+
+test('BPSK 6 dB stays in band through a 2-tap unit-energy channel', () => {
+  // Main cursor at tap 0. The second tap is real ISI; a half-amplitude
+  // second tap (592 errors) leaves the uncoded AWGN band, a quarter stays in it.
+  const h = normalizedTaps([1, 0.25]);
+  let energy = 0;
+  for (const tap of h) energy += tap * tap;
+  assert.ok(Math.abs(energy - 1) < 1e-12, `||h||^2 ${energy}`);
+  assert.ok(h[0] > h[1] && h[1] > 0);
+  const { errors } = errorsAligned({ h, offset: 0 });
+  assertBand(errors);
+});
+
+test('BPSK 6 dB stays in band with 1999 trailing zero taps', () => {
+  const h = new Float64Array(2000);
+  h[0] = 1;
+  const { errors, pRef, fullPower } = errorsAligned({ h, offset: 0 });
+  assert.ok(fullPower < pRef, `full ${fullPower} pRef ${pRef}`);
+  assertBand(errors);
+});
+
+test('pRef is the signal-region power, not the zero-padded buffer mean', () => {
+  const n = 100_000;
+  const i = new Float64Array(n * 2);
+  const q = new Float64Array(n * 2);
+  for (let k = 0; k < n; k++) i[k] = 1;
+  const sig = { i, q };
+  const y = awgn(sig, { ebn0dB: 9, bitsPerSymbol: 1, sps: 1, rng: makeRng(SEED), pRef: 1 });
+  let accI = 0;
+  let accQ = 0;
+  for (let k = 0; k < n; k++) {
+    const di = y.i[k] - sig.i[k];
+    const dq = y.q[k] - sig.q[k];
+    accI += di * di;
+    accQ += dq * dq;
+  }
+  const expected = 1 / (2 * 10 ** 0.9);
+  assertChi({ i: (accI / n) / expected, q: (accQ / n) / expected }, 'pRef');
 });
 
 test('FFT of a pure tone peaks at that bin', () => {

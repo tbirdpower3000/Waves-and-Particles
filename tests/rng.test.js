@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { makeRng } from '../src/rng.js';
+import { makeRng, sfc32, splitmix32 } from '../src/rng.js';
 
 // Brief vectors (Node/V8). uniform53(sfc32(42)) and gauss(42).
 const UNIFORM_42 = [
@@ -42,6 +42,22 @@ test('gauss(42) matches the brief', () => {
   for (let i = 0; i < GAUSS_42.length; i++) {
     assert.equal(rng.normal(), GAUSS_42[i]);
   }
+});
+
+test('splitmix32(1) matches the brief', () => {
+  const next = splitmix32(1);
+  assert.deepEqual(
+    [next(), next(), next(), next()],
+    [2527132011, 314344336, 2535364964, 2041432039],
+  );
+});
+
+test('sfc32(12345) raw words match the brief', () => {
+  const next = sfc32(12345);
+  assert.deepEqual(
+    [next(), next(), next(), next(), next(), next(), next(), next()],
+    SFC_12345,
+  );
 });
 
 test('sfc32(12345) uint stream is the uniform source', () => {
