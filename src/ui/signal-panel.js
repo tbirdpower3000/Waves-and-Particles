@@ -9,7 +9,7 @@ import {
 import { panelDetail } from './load-contract.js';
 import { reportLinkError, setReadyState } from './status.js';
 
-const BIT_COUNT = 1024;
+const BIT_COUNT = 8192;
 const SPS = 8;
 const CHIRP = { f0: 200, f1: 3000, T: 0.04, fs: 8000 };
 
@@ -148,8 +148,9 @@ export function mountSignal(doc, bus, params = {}) {
     points = symbolPoints(result.noisy.i, result.noisy.q, SPS, result.offset, result.nSymbols);
     spectrumValues = spectrumDb(contract.signal.ns.fftMag(windowed(result.noisy, result.offset, result.span)));
     if (!keepSimulated) simulated = [{ ebn0dB: db, ber: result.errorRate }];
-    berReadout.textContent = `BER ${formatBer(result.errorRate)}`;
-    note.textContent = `BER ${formatBer(result.errorRate)} at ${db.toFixed(1)} dB, ${result.txBits.length} bits, offset ${result.offset}, pRef ${result.pRef.toExponential(2)}. 1024-bit preview; the 1e6-bit check is tests/signal.test.js.`;
+    const shown = formatBer(result.errorRate, result.txBits.length);
+    berReadout.textContent = `BER ${shown}`;
+    note.textContent = `BER ${shown} at ${db.toFixed(1)} dB, ${result.txBits.length} bits, offset ${result.offset}, pRef ${result.pRef.toExponential(2)}. Preview only; the 1e6-bit check is tests/signal.test.js.`;
   }
 
   function windowed(sig, offset, span) {
@@ -255,7 +256,7 @@ export function mountSignal(doc, bus, params = {}) {
         setReadyState(stateEl, 'not-ready', panelDetail(next, ['signal', 'rng']) || 'src/signal.js is not available yet');
         note.textContent = '';
       } else {
-        setReadyState(stateEl, 'ready', 'cursor on the main tap, noise from that region');
+        setReadyState(stateEl, 'ready', 'main tap, region power');
         note.textContent = 'Identity channel until a probe impulse is frozen.';
         drawTheory();
       }

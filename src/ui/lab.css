@@ -61,10 +61,11 @@ header.app h1 {
   color: #ffd38a;
   font-family: var(--mono);
   font-size: 11px;
-  white-space: nowrap;
+  line-height: 1.3;
+  white-space: normal;
   overflow: hidden;
-  text-overflow: ellipsis;
   min-width: 0;
+  max-height: 32px;
 }
 
 #param-notes:empty { display: none; }
@@ -115,15 +116,25 @@ main {
 
 .banner {
   margin: 4px 8px;
-  padding: 0 8px;
+  padding: 2px 8px;
   min-height: 22px;
-  line-height: 22px;
+  line-height: 1.35;
   border-radius: 4px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  white-space: normal;
+  overflow: visible;
   font-family: var(--mono);
   font-size: 11px;
+}
+
+.backend {
+  margin-left: auto;
+  padding: 0 6px;
+  border: 1px solid var(--teal);
+  border-radius: 999px;
+  color: var(--teal);
+  font-family: var(--mono);
+  font-size: 11px;
+  line-height: 16px;
 }
 
 .banner[data-state="not-ready"] { color: #ffd38a; background: #241c10; }
@@ -185,9 +196,9 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; }
   color: var(--muted);
   font-family: var(--mono);
   font-size: 11px;
-  white-space: nowrap;
-  overflow: hidden;
-  text-overflow: ellipsis;
+  line-height: 1.35;
+  white-space: normal;
+  overflow: visible;
   user-select: text;
 }
 

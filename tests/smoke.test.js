@@ -37,7 +37,7 @@ import {
   sourceTiming,
 } from '../src/ui/scene.js';
 import { NOT_READY_TEXT, renderParamNotes, reportLinkError } from '../src/ui/status.js';
-import { fdtd, gpu, rng, signal as mockSignal } from '../src/ui/dev-mocks.js';
+import { fdtd, gpu, rng, signal as mockSignal } from './dev-mocks.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 
@@ -102,7 +102,7 @@ test('index.html is a no-build page with Field, Channel, and Signal panels', () 
 test('production UI does not statically import the parallel modules or dev mocks', () => {
   const uiDir = join(root, 'src/ui');
   for (const name of readdirSync(uiDir)) {
-    if (!name.endsWith('.js') || name === 'dev-mocks.js') continue;
+    if (!name.endsWith('.js')) continue;
     const text = readFileSync(join(uiDir, name), 'utf8');
     assert.doesNotMatch(text, /dev-mocks/, name);
     assert.doesNotMatch(text, /innerHTML|insertAdjacentHTML|outerHTML|document\.write/, name);
@@ -268,7 +268,7 @@ test('scene rebuilds only through the contract exports', () => {
   const series = decimatePeaks(spike, 4);
   assert.equal(series[3], 4);
   assert.deepEqual(symbolPoints(new Float64Array([2, 2]), new Float64Array([0, 0]), 2, 0, 1), [{ i: 2, q: 0 }]);
-  assert.equal(formatBer(0), '0');
+  assert.equal(formatBer(0, 8192), '< 1/8192');
 });
 
 test('channel path passes the main tap, symbol count, and signal-region power', () => {
@@ -382,9 +382,10 @@ test('URL numbers are finite and inside bounds before they can size a buffer', (
 test('README lists every test file and CI runs node --test on Node 20 and 22', () => {
   const readme = read('README.md');
   const ci = read('.github/workflows/ci.yml');
+  const base = root.endsWith('/') ? root.slice(0, -1) : root;
   for (const path of walkTests(root)) {
-    const rel = path.slice(root.length + 1).split('\\').join('/');
-    assert.ok(readme.includes(rel), `README lists ${rel}`);
+    const rel = path.slice(base.length + 1).split('\\').join('/');
+    assert.ok(readme.includes(rel), `README names ${rel}`);
   }
   assert.ok(statSync(join(root, 'tests/rng.test.js')).isFile());
   assert.ok(statSync(join(root, 'tests/signal.test.js')).isFile());
@@ -394,7 +395,13 @@ test('README lists every test file and CI runs node --test on Node 20 and 22', (
   assert.match(readme, /https:\/\/tbirdpower3000\.github\.io\/Waves-and-Particles\//);
   assert.match(readme, /2406 errors \(BER 2\.406e-3\)/);
   assert.match(readme, /2\.3883e-3/);
-  assert.match(readme, /pending CI/);
+  assert.match(readme, /tests\/fdtd\.test\.js/);
+  assert.match(readme, /tests\/fdtd-gpu\.test\.js/);
+  assert.match(readme, /S=0\.700036/);
+  assert.match(readme, /0\.335932/);
+  assert.match(readme, /SwiftShader/);
+  assert.match(readme, /UNKNOWN/);
+  assert.match(readme, /pending/);
   assert.match(readme, /gprMax/);
   assert.match(readme, /node --test/);
   assert.match(readme, /Node 20/);
@@ -407,8 +414,10 @@ test('README lists every test file and CI runs node --test on Node 20 and 22', (
   assert.match(ci, /1100x800/);
   assert.match(ci, /WAP_BROWSER_SMOKE/);
   assert.match(ci, /playwright install --with-deps chromium/);
+  assert.match(ci, /persist-credentials:\s*false/);
+  assert.match(ci, /npm ci/);
   assert.doesNotMatch(ci, /secrets\./);
-  assert.doesNotMatch(ci, /node --test tests/);
+  assert.doesNotMatch(ci, /node --test tests\/(?:\s|$)/);
   assert.doesNotMatch(ci, /node tests\//);
   const uses = [...ci.matchAll(/uses:\s*(\S+)/g)].map((match) => match[1]);
   assert.ok(uses.length >= 2);
@@ -419,7 +428,10 @@ test('README lists every test file and CI runs node --test on Node 20 and 22', (
   assert.ok(runs.includes('node --test'));
   for (const command of runs) {
     assert.ok(
-      command === 'node --test' || command === 'npm install' || command.startsWith('npx playwright install'),
+      command === 'node --test'
+        || command === 'npm ci'
+        || command === 'node --test tests/smoke-browser.test.js'
+        || command.startsWith('npx playwright install'),
       command,
     );
   }

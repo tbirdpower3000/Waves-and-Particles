@@ -6,9 +6,7 @@ export const MODULES = [
     id: 'fdtd',
     label: 'src/fdtd.js',
     optional: false,
-    // A missing file logs a console error in Chromium. Do not request it
-    // until the field solver is in the tree. Pass request: true to probe.
-    request: false,
+    request: true,
     candidates: ['../fdtd.js'],
     exports: {
       C0: 'number',
@@ -25,7 +23,7 @@ export const MODULES = [
     id: 'gpu',
     label: 'src/gpu/',
     optional: true,
-    request: false,
+    request: true,
     candidates: ['../gpu/index.js', '../gpu/gpu.js', '../gpu/stepper.js', '../gpu/webgpu.js', '../gpu/backend.js'],
     exports: {
       createGpuStepper: 'function',

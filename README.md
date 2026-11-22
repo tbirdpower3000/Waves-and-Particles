@@ -15,38 +15,40 @@ python3 -m http.server 8000
 
 ## What it does
 
-- **Field:** a 512×512 grid in TMz or scalar mode, metal walls, dielectric rectangles, one transmitter, and up to four receiver probes. Play, pause, and reset step the CPU reference. The footer reports steps per second and `navigator.hardwareConcurrency`. The GPU button calls `createGpuStepper` when `src/gpu/` is present.
-- **Channel:** each probe's impulse response, from a Gaussian pulse on the field grid.
-- **Signal:** BPSK, QPSK, or a linear chirp, convolved with the identity channel or a frozen probe, then AWGN, a constellation, BER against the theory curve, and a spectrum. Demodulation uses the main tap of the impulse response as the symbol cursor, and the noise power is taken from that symbol region.
-- **Field, for now:** `src/fdtd.js` is not in main yet. The field and channel panels say "coming soon". The page does not request `src/fdtd.js` or `src/gpu/`, because a missing file is a console error. Set `request: true` on those entries in `src/ui/load-contract.js` once the files are in the tree. A signal export that is absent still says "module not ready".
+- **Field:** a 512×512 TMz or scalar grid. Draw metal and dielectric, or pick a preset: free space, a PEC wall, or an εr=4 slab. Set the source in cells per wavelength. Play, pause, and reset call `step`. The GPU button calls `createGpuStepper` and falls back to the CPU reference. The backend name (`cpu`, `webgpu`, or `webgl2`) is labeled on the panel. The footer reports frames per second and steps per second.
+- **Channel:** each probe's samples from `addProbe`. Record impulse runs a Gaussian pulse and freezes that trace for the signal chain. If `src/fdtd.js` is missing, the panel says "coming soon".
+- **Signal:** BPSK, QPSK, or a linear chirp, convolved with the identity channel or a frozen probe, then AWGN, a constellation, BER against the theory curve, and a spectrum. Demodulation uses the main tap of the impulse response as the symbol cursor, and the noise power is taken from that symbol region. A zero error count is shown as `< 1/N`.
 
 ## Accuracy checks
 
 | Test | Result | Reference |
 |---|---|---|
 | BPSK, identity channel, Eb/N0 = 6 dB, 1e6 bits | 2406 errors (BER 2.406e-3) | 2.3883e-3 |
-| Courant time step | pending CI | dt <= 1/(c sqrt(1/dx^2 + 1/dy^2)) |
-| Free-space spreading | pending CI | amplitude falls as r^-1/2 within 5%, 50-200 cells |
-| PEC wall, normal incidence | pending CI | reflection coefficient 1 within 2% |
-| PML boundary | pending CI | reflected energy under 1% (-20 dB) |
-| Dielectric slab, eps_r = 4 | pending CI | Fresnel reflection 1/3 within 3% |
-| GPU field vs CPU | pending CI | relative L2 under 1e-3 after 500 steps |
+| Courant time step | S=0.700036 | S <= 1/sqrt(2); dt = 0.99/(c sqrt(1/dx^2 + 1/dy^2)) |
+| Free-space spreading | 0.28% | within 5% of r^-1/2, r=50 to 200 |
+| PEC wall, normal incidence | \|R\|=0.999999 | 1 within 2% |
+| PML boundary | 2.058e-9 | reflected energy under 1% (-20 dB) |
+| Dielectric slab, eps_r = 4 | \|R\|=0.335932 | 1/3 within 3% |
+| GPU field vs CPU (A7) | UNKNOWN | rel L2 under 1e-3 after 500 steps |
+| Steps/s at 512^2 (A9) | pending | reported in the field footer, not a CI gate |
 
-The 1e6-bit count is the measured BPSK run from the merged signal chain (seed 20261121, identity channel). `tests/signal.test.js` checks that run against the reference within ±20%. Field rows stay pending CI until the field solver's tests record a number.
+The 1e6-bit count is the measured BPSK run from the merged signal chain (seed 20261121, identity channel). `tests/signal.test.js` checks that run against the reference within ±20%. The FDTD rows are the numbers printed by `tests/fdtd.test.js` on main. A7 is UNKNOWN because only SwiftShader ran, so that check is not counted as a pass. A9 stays pending until the field solver's performance PR records a number.
 
 `node --test`
 
 Run that from the repo root with Node 20 or Node 22. `npm test` is the same command. Do not pass a directory: `node --test tests/` fails on Node 21 and newer because the runner treats the directory as a file. `node tests/*.test.js` without `--test` executes only the first file. GitHub Actions runs `node --test` on Node 20 and Node 22 for pull requests and for pushes to `main`, then a headless Chromium job at 1100×800.
 
+- `tests/fdtd.test.js` checks the CPU reference: Courant dt, cylindrical spreading, PEC reflection, PML energy, and the εr=4 Fresnel reflection.
+- `tests/fdtd-gpu.test.js` checks A7, GPU field against the CPU reference. It is UNKNOWN when only SwiftShader is available.
 - `tests/rng.test.js` checks the seeded generator: uniform in (0, 1), normal mean and variance, and the brief's splitmix32 and sfc32 vectors.
 - `tests/signal.test.js` checks modulation, convolution, AWGN scaling, demodulation on the channel cursor, BER including the 1e6-bit BPSK case, the FFT, and the chirp.
 - `tests/smoke.test.js` checks the package, the page, the contract loader, the channel cursor arguments, URL bounds, and that this file names every test.
-- `tests/smoke-browser.test.js` checks startup in headless Chromium at 1100×800: no console errors, a first field frame, and no scrolling. It runs when `WAP_BROWSER_SMOKE=1`.
+- `tests/smoke-browser.test.js` checks startup in headless Chromium at 1100×800: no console errors, a first field frame without scrolling, and that Play advances the step count. It runs when `WAP_BROWSER_SMOKE=1`.
 
 ## Roadmap
 
 GPR mode (layered soil, buried target, B-scan radargram, benchmarked against gprMax), a validation harness exporting PNG plus an error table, then PIC particles.
 
-`src/ui/dev-mocks.js` is a throwaway stand-in for local experiments. The page does not import it. The on-page BER preview uses 1024 bits so the tab stays responsive; the 1e6-bit gate is `tests/signal.test.js`. Steps per second are shown in the field footer and are not a CI gate.
+`tests/dev-mocks.js` is a throwaway stand-in for the smoke tests. The page does not import it. The on-page BER preview uses 8192 bits and prints `< 1/N` when that run sees no errors. The 1e6-bit gate is `tests/signal.test.js`. Steps per second are shown in the field footer and are not a CI gate.
 
 no license yet

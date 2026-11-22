@@ -64,7 +64,7 @@ export function mountChannel(doc, bus) {
 
   const observer = new ResizeObserver(() => draw());
   for (const canvas of canvases) observer.observe(canvas.parentElement);
-      setReadyState(stateEl, 'checking', 'waiting for the field solver');
+  setReadyState(stateEl, 'checking', 'waiting for the field solver');
   button.disabled = true;
   draw();
 
@@ -76,7 +76,7 @@ export function mountChannel(doc, bus) {
       if (!ready) {
         setReadyState(stateEl, 'not-ready', panelDetail(contract, ['fdtd']) || 'src/fdtd.js is not in main yet', COMING_SOON_TEXT);
       } else {
-        setReadyState(stateEl, 'ready', 'Gaussian pulse, then the probe trace');
+        setReadyState(stateEl, 'ready', 'probe trace');
       }
       draw();
     },

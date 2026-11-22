@@ -128,6 +128,13 @@ test('A8 headless Chromium loads a first field frame at 1100x800 with no console
     if (!existsSync(join(root, 'src/fdtd.js'))) {
       assert.match(await page.locator('#field-state').innerText(), /coming soon/);
       assert.match(await page.locator('#channel-state').innerText(), /coming soon/);
+    } else {
+      assert.equal(await page.locator('#field-state').getAttribute('data-state'), 'ready');
+      assert.match(await page.locator('#backend-label').innerText(), /cpu|webgpu|webgl2/);
+      await page.click('#play');
+      await page.waitForFunction(() => Number(document.querySelector('#field-canvas')?.dataset.steps) >= 1, null, { timeout: 20000 });
+      await page.click('#pause');
+      assert.ok(Number(await page.getAttribute('#field-canvas', 'data-steps')) >= 1);
     }
     if (!existsSync(join(root, 'src/signal.js')) || !existsSync(join(root, 'src/rng.js'))) {
       assert.match(await page.locator('#signal-state').innerText(), /module not ready/);
