@@ -114,11 +114,13 @@ try {
   const adapter = gpu.adapter || null;
   const text = adapter ? [adapter.vendor, adapter.architecture, adapter.device, adapter.description].join(" ") : "";
   const software = !!(adapter && (adapter.isFallbackAdapter || /swiftshader|llvmpipe|softpipe|software/i.test(text)));
+  if (gpu.fallbackReason) console.log("GPU auto-fallback: " + gpu.fallbackReason);
   window.__RESULT = {
     absent: false,
     software,
     backend: gpu.backend,
     adapter,
+    fallbackReason: gpu.fallbackReason || "",
     rows,
     probeSamples: gpuProbe.length,
     probeRel: Math.sqrt(pnum / Math.max(pden, 1e-300)),
@@ -452,4 +454,44 @@ test("A7 GPU vs CPU rel L2 < 1e-3 after 500 steps", async (t) => {
   console.log(
     `A7 PASS ${result.backend} relL2(500)=${at500.relL2.toExponential(3)} < 1e-3; probes recorded=${result.probeSamples}`,
   );
+});
+
+test("A7 forced WebGL2 on SwiftShader is software UNKNOWN", async (t) => {
+  const chrome = findChrome();
+  if (!chrome) {
+    console.log("UNKNOWN: no GPU backend");
+    t.skip("UNKNOWN: no GPU backend");
+    return;
+  }
+  const server = await serve();
+  const { port } = server.address();
+  let result;
+  try {
+    result = await chromeResult(chrome, `http://127.0.0.1:${port}/harness.html?backend=webgl2`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+  if (!result) assert.fail("GPU harness returned no result");
+  if (result.error && !result.rows) {
+    if (result.absent) {
+      console.log("UNKNOWN: no GPU backend");
+      console.log(result.error);
+      t.skip("UNKNOWN: no GPU backend");
+      return;
+    }
+    assert.fail(result.error);
+  }
+  const adapter = result.adapter || {};
+  const text = [adapter.vendor, adapter.architecture, adapter.device, adapter.description].join(" ");
+  console.log(`A7 webgl2 adapter ${JSON.stringify(adapter)} software=${result.software === true}`);
+  assert.equal(result.backend, "webgl2");
+  if (/swiftshader/i.test(text) || adapter.isFallbackAdapter === true) {
+    assert.equal(result.software, true, "SwiftShader must be reported as software");
+    console.log("A7 WebGL2 UNKNOWN: software=true (ANGLE SwiftShader); not a real-hardware pass");
+    t.skip("UNKNOWN: WebGL2 SwiftShader software adapter");
+    return;
+  }
+  const at500 = result.rows.find((row) => row.n === 500);
+  assert.ok(at500 && at500.relL2 < 1e-3, `rel L2 ${at500 && at500.relL2}`);
+  console.log(`A7 PASS webgl2 hardware relL2(500)=${at500.relL2.toExponential(3)}`);
 });

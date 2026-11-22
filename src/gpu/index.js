@@ -17,21 +17,30 @@ export async function createGpuStepper(grid, opts = {}) {
   /** @type {unknown[]} */
   const failures = [];
   if (backend === "webgpu" || backend === "auto") {
+    let gpu = null;
     try {
-      const gpu = await createWebGPUStepper(grid);
-      if (gpu) return gpu;
+      gpu = await createWebGPUStepper(grid);
     } catch (err) {
+      // WebGPU was present enough to start init. A shader or init exception
+      // must fail auto mode instead of silently becoming a WebGL2 success.
       failures.push(err);
-      if (backend === "webgpu") throw err;
+      if (backend === "webgpu" || backend === "auto") throw err;
     }
+    if (gpu) return gpu;
+    const reason = "no WebGPU adapter";
+    if (backend === "webgpu") throw new Error("UNKNOWN: no GPU backend");
+    console.log(`GPU auto-fallback: ${reason}; trying WebGL2`);
   }
   if (backend === "webgl2" || backend === "auto") {
     try {
       const gl = createWebGL2Stepper(grid);
-      if (gl) return gl;
+      if (gl) {
+        if (backend === "auto") gl.fallbackReason = "no WebGPU adapter";
+        return gl;
+      }
     } catch (err) {
       failures.push(err);
-      if (backend === "webgl2") throw err;
+      if (backend === "webgl2" || backend === "auto") throw err;
     }
   }
   if (failures.length) {

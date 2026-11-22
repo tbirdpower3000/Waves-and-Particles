@@ -290,9 +290,9 @@ test("wave phase speed within 0.5% of c after Yee correction", () => {
   const cellsPerLambda = 40;
   const f0 = C0 / (cellsPerLambda * dx);
   const pml = 12;
-  const src = 48;
-  const x1 = 160;
-  const x2 = 320;
+  const src = 80;
+  const x1 = 180;
+  const x2 = 196;
   const g = createGrid({ nx: 420, ny: 4, dx, dy: dx, pml, periodicY: true });
   for (let j = 0; j < g.ny; j++) addSource(g, { i: src, j, kind: "sine", f0, amp: 1 });
   addProbe(g, { i: x1, j: 0 });
@@ -314,20 +314,27 @@ test("wave phase speed within 0.5% of c after Yee correction", () => {
     return Math.atan2(-im, re);
   };
   // 1D Yee relation at ky = 0: sin(ω dt/2) / S = sin(β dx/2).
+  // The baseline is 16 cells (< λ/2) so a 0.8c lag cannot alias onto the
+  // expected phase by adding or subtracting 2π.
   const sinTerm = Math.sin((Math.PI * sCourant) / cellsPerLambda) / sCourant;
   const betaDx = 2 * Math.asin(sinTerm);
   const expected = betaDx * (x2 - x1);
   let dphi = phaseOf(g.probes[0].samples) - phaseOf(g.probes[1].samples);
-  while (dphi < expected - Math.PI) dphi += 2 * Math.PI;
-  while (dphi > expected + Math.PI) dphi -= 2 * Math.PI;
+  if (dphi < 0) dphi += 2 * Math.PI;
+  assert.ok(expected < Math.PI, `baseline phase ${expected} is long enough to alias`);
+  assert.ok(Math.abs(dphi - expected) < 0.5, `phase ${dphi} vs ${expected}`);
   const dist = (x2 - x1) * dx;
   const measured = (2 * Math.PI * f0 * dist) / dphi;
   const predicted = (2 * Math.PI * f0 * dx) / betaDx;
   const corrected = measured / (predicted / C0);
   const err = Math.abs(corrected - C0) / C0;
+  const flight = dphi / (2 * Math.PI * f0);
+  const flightExpected = dist / predicted;
+  const flightErr = Math.abs(flight - flightExpected) / flightExpected;
   assert.ok(err < 0.005, `corrected speed ${corrected} c=${C0} err=${err}`);
+  assert.ok(flightErr < 0.005, `time of flight ${flight} vs ${flightExpected}`);
   log(
-    `wave-speed PASS measured vp=${measured.toExponential(6)} predicted=${predicted.toExponential(6)} (vp/c=${(predicted / C0).toFixed(6)} at ${cellsPerLambda} cells/λ); after correction err=${(100 * err).toFixed(4)}% of c`,
+    `wave-speed PASS measured vp=${measured.toExponential(6)} predicted=${predicted.toExponential(6)} (vp/c=${(predicted / C0).toFixed(6)} at ${cellsPerLambda} cells/λ, baseline ${x2 - x1} cells); after correction err=${(100 * err).toFixed(4)}% of c; flight err=${(100 * flightErr).toFixed(4)}%`,
   );
 });
 
