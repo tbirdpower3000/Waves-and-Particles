@@ -1,0 +1,104 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="dark">
+  <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; worker-src 'self' blob:; base-uri 'none'; form-action 'none'">
+  <title>Waves and Particles</title>
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'%3E%3Crect fill='%23080b10' width='16' height='16'/%3E%3Cpath stroke='%232ee6c7' fill='none' d='M1 8c2-4 4-4 6 0s4 4 8 0'/%3E%3C/svg%3E">
+  <link rel="stylesheet" href="src/ui/lab.css">
+</head>
+<body>
+  <header class="app">
+    <svg class="mark" viewBox="0 0 16 16" aria-hidden="true">
+      <path d="M1 8c1.5-3 2.5-3 4 0s2.5 3 4 0 2.5-3 4 0" fill="none" stroke="currentColor" stroke-width="1.4"></path>
+    </svg>
+    <h1>Waves &amp; Particles</h1>
+    <p class="subtitle">2D FDTD lab</p>
+    <p id="param-notes" role="status"></p>
+  </header>
+  <main>
+    <section id="panel-field" class="panel" aria-labelledby="field-title">
+      <div class="panel-head">
+        <h2 id="field-title">Field</h2>
+        <span class="kicker">01</span>
+      </div>
+      <div class="toolbar" role="toolbar" aria-label="Field tools">
+        <button type="button" id="mode-tmz" data-mode="tmz" aria-pressed="true">TMz</button>
+        <button type="button" id="mode-scalar" data-mode="scalar" aria-pressed="false">Scalar</button>
+        <button type="button" id="tool-metal" data-tool="metal" aria-pressed="true" aria-label="Draw metal wall">Metal</button>
+        <button type="button" id="tool-dielectric" data-tool="dielectric" aria-pressed="false" aria-label="Draw dielectric rectangle">Dielectric</button>
+        <label class="eps">εr <input id="eps-r" type="number" min="1" max="80" step="0.1" value="4"></label>
+        <button type="button" id="tool-tx" data-tool="tx" aria-pressed="false" aria-label="Place transmitter">TX</button>
+        <button type="button" id="tool-rx" data-tool="rx" aria-pressed="false" aria-label="Place receiver probe">RX</button>
+        <button type="button" id="play" disabled>Play</button>
+        <button type="button" id="pause" disabled>Pause</button>
+        <button type="button" id="reset">Reset</button>
+        <button type="button" id="clear-geometry">Clear</button>
+        <button type="button" id="use-gpu" aria-pressed="false" disabled>GPU</button>
+      </div>
+      <p id="field-state" class="banner" data-state="checking" role="status">Checking modules…</p>
+      <div class="stage">
+        <canvas id="field-canvas" width="640" height="480" aria-label="Live field"></canvas>
+      </div>
+      <p id="field-readout" class="readout"></p>
+    </section>
+    <section id="panel-channel" class="panel" aria-labelledby="channel-title">
+      <div class="panel-head">
+        <h2 id="channel-title">Channel</h2>
+        <span class="kicker">02</span>
+      </div>
+      <p id="channel-state" class="banner" data-state="checking" role="status">Checking modules…</p>
+      <div class="toolbar">
+        <button type="button" id="record-ir" disabled>Record impulse</button>
+        <p id="channel-note" class="note"></p>
+      </div>
+      <div class="probe-stack">
+        <div class="probe"><div id="channel-label-0" class="probe-label">Probe 1</div><div class="probe-plot"><canvas id="channel-plot-0" aria-label="Probe 1 impulse response"></canvas></div></div>
+        <div class="probe"><div id="channel-label-1" class="probe-label">Probe 2</div><div class="probe-plot"><canvas id="channel-plot-1" aria-label="Probe 2 impulse response"></canvas></div></div>
+        <div class="probe"><div id="channel-label-2" class="probe-label">Probe 3</div><div class="probe-plot"><canvas id="channel-plot-2" aria-label="Probe 3 impulse response"></canvas></div></div>
+        <div class="probe"><div id="channel-label-3" class="probe-label">Probe 4</div><div class="probe-plot"><canvas id="channel-plot-3" aria-label="Probe 4 impulse response"></canvas></div></div>
+      </div>
+    </section>
+    <section id="panel-signal" class="panel" aria-labelledby="signal-title">
+      <div class="panel-head">
+        <h2 id="signal-title">Signal</h2>
+        <span class="kicker">03</span>
+      </div>
+      <p id="signal-state" class="banner" data-state="checking" role="status">Checking modules…</p>
+      <div class="controls" id="signal-controls">
+        <label class="scheme">Scheme
+          <select id="scheme">
+            <option value="bpsk">BPSK</option>
+            <option value="qpsk">QPSK</option>
+            <option value="chirp">Chirp</option>
+          </select>
+        </label>
+        <label class="channel">Channel
+          <select id="channel-source">
+            <option value="identity">Identity</option>
+          </select>
+        </label>
+        <label class="seed">Seed
+          <input id="seed" type="number" value="20261121" step="1">
+        </label>
+        <label class="wide" for="ebn0">Eb/N0 <output id="ebn0-out" for="ebn0">6.0</output> dB</label>
+        <input id="ebn0" type="range" min="-2" max="12" step="0.5" value="6">
+        <div class="row">
+          <button type="button" id="run-link">Run link</button>
+          <button type="button" id="sweep-ber">Sweep BER</button>
+          <span id="ber-readout">BER —</span>
+        </div>
+        <p id="signal-note" class="note" role="status"></p>
+      </div>
+      <div class="plots">
+        <div class="plot"><div class="plot-label">Constellation</div><div class="plot-canvas"><canvas id="constellation" aria-label="Constellation"></canvas></div></div>
+        <div class="plot"><div class="plot-label">BER vs Eb/N0</div><div class="plot-canvas"><canvas id="ber-plot" aria-label="BER versus Eb/N0"></canvas></div></div>
+        <div class="plot"><div class="plot-label">Spectrum</div><div class="plot-canvas"><canvas id="spectrum" aria-label="Spectrum"></canvas></div></div>
+      </div>
+    </section>
+  </main>
+  <script type="module" src="src/ui/main.js"></script>
+</body>
+</html>

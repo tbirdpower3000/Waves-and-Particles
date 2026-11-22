@@ -1,0 +1,16 @@
+{
+  "name": "waves-and-particles",
+  "version": "0.0.0",
+  "private": true,
+  "description": "Browser lab for 2D FDTD waves, channel impulse responses, and a BPSK/QPSK/chirp link.",
+  "type": "module",
+  "scripts": {
+    "test": "node --test"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "playwright": "1.65.1"
+  }
+}
