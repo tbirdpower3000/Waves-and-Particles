@@ -23,7 +23,7 @@
       <div class="panel-head">
         <h2 id="field-title" title="Live map of the simulated electric field across the 2D grid.">Wave field</h2>
         <span class="kicker" title="Panel number. The field panel feeds the channel panel, which feeds the signal panel.">Panel 1</span>
-        <span id="backend-label" class="backend" data-backend="cpu" aria-label="Compute engine" title="Shows whether the simulation runs on the processor (cpu) or the graphics card (webgpu/webgl2). The results are the same.">cpu</span>
+        <span id="backend-label" class="backend" data-backend="cpu" aria-label="Compute engine" title="cpu or webgpu/webgl2. Graphics results match the CPU within a small tolerance. A software renderer such as SwiftShader, llvmpipe, or softpipe is unverified.">cpu</span>
       </div>
       <p class="glance">What am I looking at? A top-down view of a radio wave spreading across a 2D grid. You draw metal and glass-like blocks and watch the wave reflect, slow down and bend.</p>
       <div class="toolbar" role="toolbar" aria-label="Field tools">
@@ -51,7 +51,7 @@
       </div>
       <p id="field-state" class="banner" data-state="checking" role="status" aria-label="Simulator status" title="Shows whether the wave solver loaded and which engine it's using.">Checking modules…</p>
       <div class="stage">
-        <canvas id="field-canvas" width="640" height="480" aria-label="Field strength map" title="Each pixel is one cell. Teal means positive field, orange-red means negative, and dark means near zero. The scale is relative to the strongest field."></canvas>
+        <canvas id="field-canvas" width="640" height="480" aria-label="Field strength map" title="Each cell is a small square; the view is scaled to fit. Teal is positive, orange-red is negative, and dark is near zero."></canvas>
       </div>
       <div class="readout-wrap">
         <p id="field-readout" class="readout" aria-label="Last action" title="The most recent event, such as running, paused, grid rebuilt or an input error."></p>
@@ -60,6 +60,7 @@
           <span title="Location of the wave source.">Transmitter</span>
           <span title="Probe locations. The colour matches each probe's trace in the Channel panel.">Receiver probes 1–4</span>
           <span title="Grey is perfect conductor and teal is dielectric. A dashed outline shows the rectangle while you drag.">Metal / insulator blocks</span>
+          <span title="Appears when the solver module can't load. Drawing still works, but nothing runs.">Simulator unavailable</span>
         </p>
       </div>
     </section>
@@ -73,6 +74,7 @@
       <div class="toolbar">
         <button type="button" id="record-ir" disabled title="Restarts the field with one short pulse from the transmitter and saves what each probe receives as the channel.">Record pulse response</button>
         <p id="channel-note" class="note" aria-label="Recording status" title="Progress or result, for example &quot;recording 120/1024&quot;, &quot;frozen pulse response, 2 probes&quot; or &quot;place a transmitter first&quot;."></p>
+        <p class="plot-key" id="channel-series-label">Received signal vs time <span title="Time runs left to right, one sample per simulation step, about 2.3 ns each.">Time</span> <span title="Scaled so each trace's own peak fills the plot. Heights can't be compared between probes. The centre line is zero.">Relative field strength</span></p>
       </div>
       <div class="probe-stack">
         <div class="probe"><div id="channel-label-0" class="probe-label" title="The field at probe 1 over time. &quot;Live&quot; updates while running. &quot;Frozen N&quot; is a saved recording of N samples.">Probe 1 trace</div><div class="probe-plot"><canvas id="channel-plot-0" aria-label="Probe 1 pulse response" title="The field at that probe over time. The first bump is the direct wave and later bumps are echoes."></canvas></div></div>
@@ -114,9 +116,9 @@
         <p id="signal-note" class="note" role="status" aria-label="Run details" title="Settings and results of the last run. &quot;pRef&quot; is the received signal power used to set the noise level."></p>
       </div>
       <div class="plots">
-        <div class="plot"><div class="plot-label" title="Each dot is one received symbol. Tight clusters mean a clean signal and smeared clusters mean noise or echoes.">Received symbol map</div><div class="plot-canvas"><canvas id="constellation" aria-label="Received symbol map" title="Each dot is one received symbol. Tight clusters mean a clean signal and smeared clusters mean noise or echoes."></canvas></div></div>
-        <div class="plot"><div class="plot-label" title="The teal line is textbook AWGN theory. Orange dots are measured runs. The amber line marks the current slider setting.">Errors vs noise level</div><div class="plot-canvas"><canvas id="ber-plot" aria-label="Errors versus noise level" title="The teal line is textbook AWGN theory. Orange dots are measured runs. The amber line marks the current slider setting."></canvas></div></div>
-        <div class="plot"><div class="plot-label" title="How the received signal's power is spread across frequency, relative to its strongest frequency.">Frequency content</div><div class="plot-canvas"><canvas id="spectrum" aria-label="Frequency content" title="How the received signal's power is spread across frequency, relative to its strongest frequency."></canvas></div></div>
+        <div class="plot"><div class="plot-head"><div class="plot-label" title="Each dot is one received symbol. Tight clusters mean a clean signal and smeared clusters mean noise or echoes.">Received symbol map</div><p class="plot-key"><span title="Real part of the received baseband signal.">In-phase (I)</span><span title="Imaginary part, 90° out of phase with I.">Quadrature (Q)</span><span title="A reference circle of radius 1. BPSK points sit on it, and noise-free QPSK points sit outside it at radius √2.">Unit-amplitude circle</span><span title="For the chirp, a line traces the signal sample by sample instead of plotting symbol dots.">Chirp trajectory</span></p></div><div class="plot-canvas"><canvas id="constellation" aria-label="Received symbol map" title="Each dot is one received symbol. Tight clusters mean a clean signal and smeared clusters mean noise or echoes."></canvas></div></div>
+        <div class="plot"><div class="plot-head"><div class="plot-label" title="The teal line is textbook AWGN theory. Orange dots are measured runs. The amber line marks the current slider setting.">Errors vs noise level</div><p class="plot-key"><span title="Linear scale from −2 to 12 dB.">Eb/N0 (dB)</span><span title="Logarithmic, from 1 at the top to 0.000001 at the bottom. Each equal step down is ten times fewer errors.">Bit error rate (log)</span><span title="The chirp carries no data bits, so a bit error rate doesn't apply.">No chirp error curve</span></p></div><div class="plot-canvas"><canvas id="ber-plot" aria-label="Errors versus noise level" title="The teal line is textbook AWGN theory. Orange dots are measured runs. The amber line marks the current slider setting."></canvas></div></div>
+        <div class="plot"><div class="plot-head"><div class="plot-label" title="How the received signal's power is spread across frequency, relative to its strongest frequency.">Frequency content</div><p class="plot-key"><span title="From zero to half the sample rate, positive frequencies only. That's 0–4000 Hz for the chirp.">Frequency</span><span title="Magnitude in decibels below the strongest frequency bin. The top of the plot is the peak.">Relative level</span></p></div><div class="plot-canvas"><canvas id="spectrum" aria-label="Frequency content" title="How the received signal's power is spread across frequency, relative to its strongest frequency."></canvas></div></div>
       </div>
     </section>
   </main>
