@@ -30,7 +30,7 @@ python3 -m http.server 8000
 | PML boundary | 2.058e-9 | reflected energy under 1% (-20 dB) |
 | Dielectric slab, eps_r = 4 | \|R\|=0.335932 | 1/3 within 3% |
 | GPU field vs CPU (A7) | UNKNOWN on SwiftShader | rel L2 under 1e-3 after 500 steps on hardware |
-| Steps/s at 512^2 (A9) | see [docs/fdtd-perf.md](docs/fdtd-perf.md) | reported there, not gated |
+| Steps/s at 512^2 (A9) | JS 413 / WASM 954 (2.31×); 256^2 JS 1537 / WASM 3381 (2.20×); Node v22.23.4 | tests/fdtd-wasm.test.js |
 
 The 1e6-bit count is the measured BPSK run from the merged signal chain (seed 20261121, identity channel). `tests/signal.test.js` checks that run against the reference within ±20%. The FDTD rows are the numbers printed by `tests/fdtd.test.js` on main. A7 is UNKNOWN on SwiftShader. A9 is the table in [docs/fdtd-perf.md](docs/fdtd-perf.md).
 

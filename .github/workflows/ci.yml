@@ -46,3 +46,18 @@ jobs:
         env:
           WAP_BROWSER_SMOKE: '1'
         run: node --test tests/smoke-browser.test.js
+
+  wasm:
+    name: rust wasm
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: dtolnay/rust-toolchain@df2a88e9fe4098bad09cb42c3dec7187f15861fc
+        with:
+          toolchain: 1.83.0
+          targets: wasm32-unknown-unknown
+      - name: Rebuild the committed wasm
+        run: bash rust/fdtd-wasm/ci.sh

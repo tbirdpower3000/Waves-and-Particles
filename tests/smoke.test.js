@@ -458,6 +458,7 @@ test('README lists every test file and CI runs node --test on Node 20 and 22', (
       command === 'node --test'
         || command === 'npm ci'
         || command === 'node --test tests/smoke-browser.test.js'
+        || command === 'bash rust/fdtd-wasm/ci.sh'
         || command.startsWith('npx playwright install'),
       command,
     );
