@@ -17,7 +17,7 @@ python3 -m http.server 8000
 
 - **Field:** a 512×512 TMz or scalar grid. Draw metal and dielectric, or pick a preset: free space, a PEC wall, or an εr=4 slab. Set the source in cells per wavelength. Play, pause, and reset call `step`. The GPU button calls `createGpuStepper` and falls back to the CPU reference. The label names the active backend, including `software renderer (SwiftShader)` when the adapter is SwiftShader, and the same form for llvmpipe or softpipe. The footer shows frames/s for the view and solver step/s for the time spent inside `step`. A9 is recorded in [docs/fdtd-perf.md](docs/fdtd-perf.md), not in that footer.
 - **Channel:** each probe's samples from `addProbe`. Record pulse response runs a Gaussian pulse and freezes that trace for the signal chain. If `src/fdtd.js` is missing, the panel says "coming soon".
-- **Signal:** BPSK, QPSK, or a linear chirp, convolved with the identity channel or a frozen probe, then AWGN, a constellation, BER against the theory curve, and a spectrum. Demodulation uses the main tap of the impulse response as the symbol cursor, and the noise power is taken from that symbol region. A zero error count is shown as `< 1/N`.
+- **Signal:** BPSK, QPSK, or a linear chirp, convolved with the identity channel or a frozen probe, then AWGN, a constellation, BER against the theory curve, and a spectrum. Demodulation uses the main tap of the impulse response as the symbol cursor, and the noise power is taken from that symbol region. A zero error count is shown as `< 1/N`. `src/gpu-signal` (`createGpuSignal`) is the WebGPU compute path for that chain. This page still calls the CPU modules.
 
 ## Accuracy checks
 

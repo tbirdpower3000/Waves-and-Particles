@@ -6,7 +6,7 @@ import net from 'node:net';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
+const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const THEORY = 2.3882907809328075e-3;
 
 function findChrome() {
@@ -58,8 +58,8 @@ function adapterReport(adapter) {
   const architecture = String(info.architecture || '');
   const vendor = String(info.vendor || '');
   const deviceName = String(info.device || '');
-  const blob = description + ' ' + architecture + ' ' + vendor + ' ' + deviceName;
-  const fallback = Boolean(adapter.isFallbackAdapter);
+  const blob = [vendor, architecture, deviceName, description].join(' ');
+  const fallback = info.isFallbackAdapter === true;
   const software = fallback || /swiftshader|llvmpipe|softpipe|software/i.test(blob);
   const name = architecture && description.toLowerCase().indexOf(architecture.toLowerCase()) === -1
     ? (description + ' ' + architecture).trim()
@@ -172,7 +172,73 @@ try {
         bitsPerSymbol: 2,
       });
       const gpuMs = performance.now() - gpuT0;
+
+      async function threw(fn, pattern) {
+        try {
+          await fn();
+          return false;
+        } catch (err) {
+          return pattern.test(String(err && err.message ? err.message : err));
+        }
+      }
+      const limitBits = await threw(() => gpu.bitsRandom(5_000_000, 1), /above the limit/);
+      const limitMod = await threw(
+        () => gpu.modulate(new Uint8Array(5_000_000), { scheme: 'bpsk', sps: 1 }),
+        /above the limit/,
+      );
+      const limitSweep = await threw(
+        () => gpu.countErrors({ nBits: 8_000_000, scheme: 'bpsk', ebn0dB: 0, seed: 1, h: [1] }),
+        /above the limit/,
+      );
+      const badOffset = await threw(
+        () => gpu.countErrors({ nBits: 128, scheme: 'bpsk', ebn0dB: 6, seed: 1, h: [1], offset: 1000 }),
+        /offset/,
+      );
+      const badSymbols = await threw(
+        () => gpu.countErrors({ nBits: 64, scheme: 'bpsk', ebn0dB: 6, seed: 1, h: [1], nSymbols: 1000 }),
+        /nSymbols/,
+      );
+      const badK = await threw(
+        () => gpu.countErrors({ nBits: 64, scheme: 'bpsk', ebn0dB: 6, seed: 1, bitsPerSymbol: 2 }),
+        /conflicts/,
+      );
+      const half = await gpu.countErrors({
+        nBits: 200_000, scheme: 'bpsk', sps: 1, ebn0dB: 6, seed: 7, h: [0.5],
+      });
+      const loud = await gpu.countErrors({
+        nBits: 200_000, scheme: 'bpsk', sps: 1, ebn0dB: 6, seed: 7, h: [2],
+      });
+      const zerosI = new Float64Array(64);
+      const zerosQ = new Float64Array(64);
+      const noiseA = await gpu.awgn(
+        { i: zerosI, q: zerosQ },
+        { ebn0dB: 6, bitsPerSymbol: 1, sps: 1, seed: 5, pRef: 1 },
+      );
+      const noiseB = await gpu.awgn(
+        { i: zerosI, q: zerosQ },
+        { ebn0dB: 6, bitsPerSymbol: 1, sps: 1, seed: 5 ^ 1, pRef: 1 },
+      );
+      let swapped = 0;
+      for (let i = 0; i < noiseA.i.length; i++) {
+        if (Math.abs(noiseA.i[i] - noiseB.q[i]) < 1e-5 && Math.abs(noiseA.q[i] - noiseB.i[i]) < 1e-5) swapped++;
+      }
+      const randN = 256;
+      const randI = new Float64Array(randN);
+      const randQ = new Float64Array(randN);
+      let state = 1;
+      for (let i = 0; i < randN; i++) {
+        state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+        randI[i] = state / 2 ** 32 * 2 - 1;
+        state = (Math.imul(state, 1103515245) + 12345) >>> 0;
+        randQ[i] = state / 2 ** 32 * 2 - 1;
+      }
+      const randRel = relL2(fftMag({ i: randI, q: randQ }), await gpu.fftMag({ i: randI, q: randQ }));
+      const liveBefore = gpu.bufferCount();
       gpu.destroy();
+      const liveAfter = gpu.bufferCount();
+      const afterDestroy = await gpu.countErrors({
+        nBits: 1024, scheme: 'bpsk', ebn0dB: 6, seed: 3, h: [1], pRef: 1,
+      });
       device.destroy();
 
       window.__RESULT = {
@@ -188,6 +254,21 @@ try {
         nBits: N,
         gpuMs,
         theory: THEORY,
+        limitBits,
+        limitMod,
+        limitSweep,
+        badOffset,
+        badSymbols,
+        badK,
+        halfErrors: half.errors,
+        halfBits: half.nBits,
+        loudErrors: loud.errors,
+        loudBits: loud.nBits,
+        swapped,
+        randRel,
+        liveBefore,
+        liveAfter,
+        afterDestroy: afterDestroy.errors,
       };
     }
   }
@@ -207,7 +288,8 @@ function serve() {
     }
     const rel = decodeURIComponent(url.pathname);
     const file = path.normalize(path.join(root, rel));
-    if (!file.startsWith(root)) {
+    const rootPrefix = root.endsWith(path.sep) ? root : root + path.sep;
+    if (file !== root && !file.startsWith(rootPrefix)) {
       res.writeHead(403);
       res.end();
       return;
@@ -343,7 +425,7 @@ async function chromeResult(chrome, pageUrl) {
     '--use-gl=angle',
     '--use-angle=swiftshader',
     '--enable-unsafe-webgpu',
-    '--remote-allow-origins=*',
+    `--remote-allow-origins=http://127.0.0.1:${port}`,
     `--remote-debugging-port=${port}`,
     `--user-data-dir=${profile}`,
     'about:blank',

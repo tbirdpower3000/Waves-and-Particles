@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { runGpuSignalCheck } from '../src/gpu-signal/browser-check.js';
+import { runGpuSignalCheck } from './gpu-signal-harness.js';
 import { makeRng } from '../src/rng.js';
 import {
   awgn,
@@ -424,4 +424,26 @@ test('GPU signal chain matches the CPU reference', { timeout: 180_000 }, async (
   assert.ok(qpskRel <= 0.20, `QPSK BER ${qpskRate}`);
   assert.ok(result.fftRel < 1e-4, `FFT rel ${result.fftRel}`);
   assert.ok(result.firRel < 1e-4, `FIR rel ${result.firRel}`);
+  assert.equal(result.limitBits, true);
+  assert.equal(result.limitMod, true);
+  assert.equal(result.limitSweep, true);
+  assert.equal(result.badOffset, true);
+  assert.equal(result.badSymbols, true);
+  assert.equal(result.badK, true);
+  const halfRate = result.halfErrors / result.halfBits;
+  const loudRate = result.loudErrors / result.loudBits;
+  assert.ok(Math.abs(halfRate - THEORY[6]) / THEORY[6] <= 0.25, `h=0.5 BER ${halfRate}`);
+  assert.ok(Math.abs(loudRate - THEORY[6]) / THEORY[6] <= 0.25, `h=2 BER ${loudRate}`);
+  assert.ok(result.swapped < 8, `seed^1 swapped I/Q on ${result.swapped} samples`);
+  assert.ok(result.randRel < 1e-4, `random FFT rel ${result.randRel}`);
+  assert.equal(result.liveBefore, 0);
+  assert.equal(result.liveAfter, 0);
+  assert.equal(typeof result.afterDestroy, 'number');
+  console.log(
+    `limits=${result.limitBits}/${result.limitMod}/${result.limitSweep} offset=${result.badOffset} nSymbols=${result.badSymbols} k=${result.badK} h=0.5 errors=${result.halfErrors}/${result.halfBits} h=2 errors=${result.loudErrors}/${result.loudBits} swapped=${result.swapped} randFFT=${result.randRel.toExponential(3)}`,
+  );
+  if (adapter.software) {
+    console.log('UNKNOWN: software adapter (adapter.info SwiftShader or fallback); not a real-hardware pass');
+    t.skip('UNKNOWN: software GPU adapter');
+  }
 });
