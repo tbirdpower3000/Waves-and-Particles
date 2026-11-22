@@ -8,7 +8,14 @@ if ! command -v wasm-bindgen >/dev/null 2>&1 || ! wasm-bindgen --version | grep 
   echo "wasm-bindgen 0.2.100 is required" >&2
   exit 1
 fi
-cargo build --release --target wasm32-unknown-unknown
+
+# Panic paths must not keep this machine's cargo home or checkout, or the
+# CI rebuild will not match the committed package.
+cargo_home="${CARGO_HOME:-${HOME}/.cargo}"
+cargo_home="$(cd "$cargo_home" && pwd)"
+export RUSTFLAGS="--remap-path-prefix=${cargo_home}=/cargo --remap-path-prefix=${root}=/src${RUSTFLAGS:+ ${RUSTFLAGS}}"
+
+cargo build --release --locked --target wasm32-unknown-unknown
 out="$root/src/wasm/pkg"
 mkdir -p "$out"
 wasm-bindgen \
