@@ -88,9 +88,12 @@ export function spectrumDb(mag) {
   return out;
 }
 
-export function formatBer(rate) {
+export function formatBer(rate, bits) {
   if (!Number.isFinite(rate)) return '—';
-  if (rate === 0) return '0';
+  if (rate === 0) {
+    const n = Number.isFinite(bits) && bits > 0 ? Math.trunc(bits) : 0;
+    return n > 0 ? `< 1/${n}` : '< 1/N';
+  }
   return rate.toExponential(2);
 }
 

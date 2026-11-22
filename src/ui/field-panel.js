@@ -49,6 +49,7 @@ export function mountField(doc, bus, params = {}) {
   let message = 'draw a metal wall or place a transmitter';
   let tool = 'metal';
   let solverReady = false;
+  let fps = 0;
 
   const toolButtons = [...doc.querySelectorAll('[data-tool]')];
   const modeButtons = [...doc.querySelectorAll('[data-mode]')];
@@ -77,12 +78,23 @@ export function mountField(doc, bus, params = {}) {
     play.setAttribute('aria-pressed', String(running));
     must('use-gpu').disabled = !solverReady || !contract?.gpu?.ready;
     must('use-gpu').setAttribute('aria-pressed', String(gpuOn));
+    showBackend();
+  }
+
+  function activeBackend() {
+    if (!solverReady) return 'cpu';
+    return gpuOn ? (stepper?.backend || 'gpu') : 'cpu';
+  }
+
+  function showBackend() {
+    const el = doc.getElementById('backend-label');
+    if (!el) return;
+    const name = activeBackend();
+    el.textContent = name;
+    el.dataset.backend = name;
   }
 
   function updateReadout() {
-    const gpuText = !contract?.gpu?.ready
-      ? 'GPU module not ready'
-      : gpuOn ? `GPU ${stepper?.backend || 'on'}` : 'GPU idle';
     const threads = globalThis.navigator?.hardwareConcurrency ?? '?';
     const cell = hover ? `cell ${hover.i},${hover.j}` : '';
     readout.textContent = [
@@ -92,8 +104,8 @@ export function mountField(doc, bus, params = {}) {
       `dt ${fmt(grid?.dt)}`,
       `step ${steps}`,
       `${rate.toFixed(0)} step/s`,
-      stepper?.backend || 'cpu',
-      gpuText,
+      `${fps.toFixed(0)} fps`,
+      `backend ${activeBackend()}`,
       `threads ${threads}`,
       cell,
     ].filter(Boolean).join(' · ');
@@ -105,6 +117,7 @@ export function mountField(doc, bus, params = {}) {
     canvas.dataset.materials = String(scene.materials.length);
     canvas.dataset.probes = String(scene.probes.length);
     canvas.dataset.source = scene.source ? '1' : '0';
+    canvas.dataset.steps = String(steps);
     panel.dataset.mode = scene.mode;
     const warning = drawField(canvas, {
       field: lastField,
@@ -196,7 +209,8 @@ export function mountField(doc, bus, params = {}) {
     if (!on) {
       if (solverReady && grid) stepper = cpuStepper(contract.fdtd.ns, grid);
       gpuOn = false;
-      message = 'CPU reference';
+      message = 'backend cpu';
+      setReadyState(stateEl, 'ready', 'cpu');
       updateTransport();
       updateReadout();
       return;
@@ -216,11 +230,13 @@ export function mountField(doc, bus, params = {}) {
         destroy() { try { handle.destroy?.(); } catch { /* ignore */ } },
       };
       gpuOn = true;
-      message = `GPU ${stepper.backend}`;
+      message = `backend ${stepper.backend}`;
+      setReadyState(stateEl, 'ready', stepper.backend);
     } catch (err) {
       gpuOn = false;
       if (grid && contract?.fdtd?.ns) stepper = cpuStepper(contract.fdtd.ns, grid);
       message = err instanceof Error ? err.message : String(err);
+      setReadyState(stateEl, 'ready', 'cpu');
     }
     updateTransport();
     updateReadout();
@@ -240,6 +256,8 @@ export function mountField(doc, bus, params = {}) {
     updateTransport();
     let windowStart = performance.now();
     let windowSteps = 0;
+    let frames = 0;
+    let fpsStart = windowStart;
     while (running && token === generation) {
       const active = stepper;
       try {
@@ -258,10 +276,16 @@ export function mountField(doc, bus, params = {}) {
         return;
       }
       const now = performance.now();
+      frames += 1;
       if (now - windowStart >= 500) {
         rate = (windowSteps / (now - windowStart)) * 1000;
         windowSteps = 0;
         windowStart = now;
+      }
+      if (now - fpsStart >= 500) {
+        fps = (frames / (now - fpsStart)) * 1000;
+        frames = 0;
+        fpsStart = now;
       }
       message = 'running';
       draw();
@@ -343,8 +367,52 @@ export function mountField(doc, bus, params = {}) {
     return cellFromOffset(event.clientX - rect.left, event.clientY - rect.top, rect.width, rect.height, scene.nx, scene.ny);
   }
 
+  function markCustom() {
+    const preset = doc.getElementById('preset');
+    if (preset && preset.value !== 'custom') preset.value = 'custom';
+  }
+
+  function placeDefaultSource() {
+    if (!scene.source) {
+      scene.source = {
+        i: Math.max(scene.pml + 4, Math.floor(scene.nx * 0.28)),
+        j: Math.floor(scene.ny / 2),
+        kind: 'sine',
+      };
+    }
+    if (scene.probes.length === 0) {
+      const i = Math.min(scene.nx - scene.pml - 4, scene.source.i + 48);
+      addProbe(scene, i, scene.source.j);
+    }
+  }
+
+  function applyPreset(name) {
+    const y0 = Math.min(scene.ny - 2, scene.pml + 2);
+    const y1 = Math.max(y0, scene.ny - scene.pml - 3);
+    scene.materials = [];
+    if (name === 'pec') {
+      const x = Math.min(scene.nx - scene.pml - 4, Math.floor(scene.nx * 0.7));
+      scene.materials.push(materialFromRect({ x0: x, y0, x1: x + 1, y1 }, 'metal', 1));
+      message = 'PEC wall';
+    } else if (name === 'slab') {
+      const x0 = Math.floor(scene.nx * 0.55);
+      const x1 = Math.min(scene.nx - scene.pml - 3, Math.floor(scene.nx * 0.72));
+      scene.materials.push(materialFromRect({ x0, y0, x1, y1 }, 'dielectric', 4));
+      scene.epsR = 4;
+      epsInput.value = '4';
+      message = 'eps_r=4 slab';
+    } else {
+      message = 'free space';
+    }
+    placeDefaultSource();
+    const preset = doc.getElementById('preset');
+    if (preset) preset.value = name === 'pec' || name === 'slab' ? name : 'free';
+    rebuild('time');
+  }
+
   function commitGeometry(nextMessage) {
     message = nextMessage;
+    markCustom();
     rebuild('geometry');
   }
 
@@ -427,6 +495,23 @@ export function mountField(doc, bus, params = {}) {
     rebuild('geometry');
   });
   must('use-gpu').addEventListener('click', () => { enableGpu(!gpuOn); });
+  must('preset').addEventListener('change', () => {
+    const name = must('preset').value;
+    if (name === 'custom') return;
+    applyPreset(name);
+  });
+  must('freq').addEventListener('change', () => {
+    const n = Number(must('freq').value);
+    if (!Number.isInteger(n) || n < 8 || n > 64) {
+      must('freq').value = String(scene.cellsPerLambda);
+      message = 'frequency stays between 8 and 64 cells per wavelength';
+      updateReadout();
+      return;
+    }
+    scene.cellsPerLambda = n;
+    message = `${n} cells per wavelength`;
+    rebuild('time');
+  });
 
   doc.addEventListener('keydown', (event) => {
     const tag = event.target?.tagName;
@@ -460,12 +545,12 @@ export function mountField(doc, bus, params = {}) {
         setReadyState(stateEl, 'not-ready', detail, COMING_SOON_TEXT);
         message = COMING_SOON_TEXT;
       } else {
-        const gpuDetail = next.gpu?.ready
-          ? 'CPU reference, GPU available'
-          : 'CPU reference. GPU module not ready';
-        setReadyState(stateEl, 'ready', gpuDetail);
-        message = 'CPU reference';
-        rebuild('time');
+        setReadyState(stateEl, 'ready', 'cpu');
+        if (!scene.source && scene.materials.length === 0) applyPreset('free');
+        else {
+          message = 'backend cpu';
+          rebuild('time');
+        }
       }
       updateTransport();
       draw();

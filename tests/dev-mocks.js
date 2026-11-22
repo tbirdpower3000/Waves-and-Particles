@@ -1,6 +1,6 @@
 /**
  * DEV MOCK. Not a physics solver and not the signal chain.
- * index.html and the other UI modules do not import this file.
+ * The page does not import this file. It lives under tests/ for the smoke tests.
  */
 
 export const C0 = 299792458;

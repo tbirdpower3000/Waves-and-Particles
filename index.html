@@ -23,6 +23,7 @@
       <div class="panel-head">
         <h2 id="field-title">Field</h2>
         <span class="kicker">01</span>
+        <span id="backend-label" class="backend" data-backend="cpu">cpu</span>
       </div>
       <div class="toolbar" role="toolbar" aria-label="Field tools">
         <button type="button" id="mode-tmz" data-mode="tmz" aria-pressed="true">TMz</button>
@@ -32,6 +33,15 @@
         <label class="eps">εr <input id="eps-r" type="number" min="1" max="80" step="0.1" value="4"></label>
         <button type="button" id="tool-tx" data-tool="tx" aria-pressed="false" aria-label="Place transmitter">TX</button>
         <button type="button" id="tool-rx" data-tool="rx" aria-pressed="false" aria-label="Place receiver probe">RX</button>
+        <label class="freq">cells/λ <input id="freq" type="number" min="8" max="64" step="1" value="24"></label>
+        <label class="preset">preset
+          <select id="preset">
+            <option value="free">Free space</option>
+            <option value="pec">PEC wall</option>
+            <option value="slab">εr=4 slab</option>
+            <option value="custom">Custom</option>
+          </select>
+        </label>
         <button type="button" id="play" disabled>Play</button>
         <button type="button" id="pause" disabled>Pause</button>
         <button type="button" id="reset">Reset</button>

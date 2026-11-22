@@ -12,6 +12,7 @@ export function createScene(params = {}) {
     dy: 1,
     pml: params.pml ?? 16,
     epsR: params.eps ?? 4,
+    cellsPerLambda: params.cellsPerLambda ?? 24,
     materials: [],
     source: null,
     probes: [],
@@ -69,7 +70,7 @@ export function addProbe(scene, i, j) {
   return { ok: true, reason: '' };
 }
 
-export function sourceTiming(grid, courantDt, c0, kind) {
+export function sourceTiming(grid, courantDt, c0, kind, cellsPerLambda = 24) {
   const dx = Number.isFinite(grid.dx) && grid.dx > 0 ? grid.dx : 1;
   const dy = Number.isFinite(grid.dy) && grid.dy > 0 ? grid.dy : dx;
   let dt = grid.dt;
@@ -78,7 +79,8 @@ export function sourceTiming(grid, courantDt, c0, kind) {
   }
   if (!(Number.isFinite(dt) && dt > 0)) dt = 1;
   const speed = Number.isFinite(c0) && c0 > 0 ? c0 : 1;
-  const f0 = speed / (24 * dx);
+  const perLambda = Number.isFinite(cellsPerLambda) && cellsPerLambda >= 4 ? cellsPerLambda : 24;
+  const f0 = speed / (perLambda * dx);
   if (kind === 'gaussian') {
     const spread = 12 * dt;
     return { kind: 'gaussian', f0, spread, t0: 4 * spread, amp: 1 };
@@ -104,7 +106,7 @@ export function rebuildGrid(scene, fdtd, sourceKind) {
   }
   if (scene.source) {
     const kind = sourceKind || scene.source.kind || 'sine';
-    const timing = sourceTiming(grid, fdtd.courantDt, fdtd.C0, kind);
+    const timing = sourceTiming(grid, fdtd.courantDt, fdtd.C0, kind, scene.cellsPerLambda);
     fdtd.addSource(grid, {
       i: scene.source.i,
       j: scene.source.j,

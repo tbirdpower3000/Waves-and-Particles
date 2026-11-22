@@ -1,6 +1,6 @@
 # Waves-and-Particles module contract (WAP-001 r1)
 
-No build step. Browser loads ES modules from `src/` via `<script type="module">`; Node (>=20) imports the same files in tests. No runtime npm deps; dev deps none required (tests use `node:test` + `node:assert`).
+No build step. Browser loads ES modules from `src/` via `<script type="module">`; Node (>=20) imports the same files in tests. No runtime npm deps. Playwright is a dev-only test dependency for the headless Chromium smoke; the other tests use `node:test` and `node:assert`.
 
 ## File ownership (one writer per file during r1)
 | Path | Owner |
@@ -31,8 +31,8 @@ export function bitsRandom(n, rng)
 export function modulate(bits, { scheme /* 'bpsk'|'qpsk' */, sps }) // -> { i: Float64Array, q: Float64Array }
 export function chirp({ f0, f1, T, fs })                            // -> { i, q }
 export function convolveChannel(sig, h /* Float64Array real impulse response */) // -> { i, q }
-export function awgn(sig, { ebn0dB, bitsPerSymbol, sps, rng })      // -> { i, q }
-export function demodulate(sig, { scheme, sps })                    // -> bits
+export function awgn(sig, { ebn0dB, bitsPerSymbol, sps, rng, pRef }) // -> { i, q }
+export function demodulate(sig, { scheme, sps, offset, nSymbols })   // -> bits
 export function ber(txBits, rxBits)
 export function berTheory(scheme, ebn0dB)
 export function fftMag(sig)                                         // -> Float64Array
@@ -44,8 +44,8 @@ export function fftMag(sig)                                         // -> Float6
 `index.html` imports the three modules only through the exports above. If an export is missing at runtime (parallel build), UI shows a clear "module not ready" state instead of crashing.
 
 ## Amendment r1.1 (2026-11-21, Code Lab, after QC on PR #1/#2)
-- `demodulate(rx, scheme, sps, opts?)`: `opts.offset` (sample index, default 0), `opts.nSymbols` (decode exactly this many). Callers using any non-identity channel MUST pass both.
-- `awgn(x, ebn0dB, k, L, opts?)`: `opts.pRef` overrides buffer mean power. Callers MUST pass signal-region power when the buffer contains padding/tails.
+- `demodulate(sig, { scheme, sps, offset, nSymbols })`. `offset` is the sample index of symbol 0. `nSymbols` is how many symbols to decode. Callers using any non-identity channel MUST pass both.
+- `awgn(sig, { ebn0dB, bitsPerSymbol, sps, rng, pRef })`. `pRef` is the mean power of the symbol region and overrides the mean of the whole buffer. Callers MUST pass it when the buffer contains padding or tails.
 - `ber(txBits, rxBits)` throws on length mismatch.
 - `src/rng.js` additionally exports `splitmix32`, `sfc32` (non-cryptographic; never for tokens/IDs).
 - UI (owner C) MUST always pass offset, nSymbols and pRef through the channel path.
