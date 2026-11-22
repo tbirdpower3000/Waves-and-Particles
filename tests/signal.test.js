@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
+import { runGpuSignalCheck } from '../src/gpu-signal/browser-check.js';
 import { makeRng } from '../src/rng.js';
 import {
   awgn,
@@ -387,4 +388,40 @@ test('linear chirp sweeps from f0 to f1 at unit amplitude', () => {
   assert.ok(Math.abs(freqAt(0) - expectAt(0)) < 1e-4);
   assert.ok(Math.abs(freqAt(n - 2) - expectAt(n - 2)) < 1e-3);
   assert.ok(freqAt(n - 2) > freqAt(0));
+});
+
+test('GPU signal chain matches the CPU reference', { timeout: 180_000 }, async (t) => {
+  const result = await runGpuSignalCheck();
+  if (!result || result.unknown) {
+    console.log(`UNKNOWN: no GPU adapter${result?.reason ? ` (${result.reason})` : ''}`);
+    t.skip('UNKNOWN: no GPU adapter');
+    return;
+  }
+  if (result.error) assert.fail(result.error);
+  const adapter = result.adapter;
+  const kind = adapter.software ? 'software' : 'hardware';
+  console.log(
+    `adapter: ${adapter.description} vendor=${adapter.vendor || 'n/a'} device=${adapter.device || 'n/a'} arch=${adapter.architecture || 'n/a'} ${kind} fallback=${adapter.fallback}`,
+  );
+  const bpskRate = result.bpskErrors / result.nBits;
+  const qpskRate = result.qpskErrors / result.nBits;
+  const bpskRel = Math.abs(bpskRate - THEORY[6]) / THEORY[6];
+  const qpskRel = Math.abs(qpskRate - THEORY[6]) / THEORY[6];
+  const gpuBits = result.nBits * 2;
+  console.log(
+    `GPU BPSK N=${result.nBits} errors=${result.bpskErrors} BER=${bpskRate.toExponential(4)} rel=${(bpskRel * 100).toFixed(2)}%`,
+  );
+  console.log(
+    `GPU QPSK N=${result.nBits} errors=${result.qpskErrors} BER=${qpskRate.toExponential(4)} rel=${(qpskRel * 100).toFixed(2)}%`,
+  );
+  console.log(
+    `bits/s GPU=${(gpuBits / (result.gpuMs / 1000)).toExponential(3)} over ${result.gpuMs.toFixed(0)} ms (BPSK+QPSK)  CPU=${(result.nBits / (result.cpuMs / 1000)).toExponential(3)} over ${result.cpuMs.toFixed(0)} ms (BPSK)`,
+  );
+  console.log(`FFT relL2=${result.fftRel.toExponential(3)}  FIR relL2=${result.firRel.toExponential(3)}  modem mismatches=${result.roundtripMismatches}  CPU errors=${result.cpuErrors}`);
+  assert.equal(result.roundtripMismatches, 0);
+  assert.ok(result.nBits >= 1_000_000);
+  assert.ok(bpskRel <= 0.20, `BPSK BER ${bpskRate}`);
+  assert.ok(qpskRel <= 0.20, `QPSK BER ${qpskRate}`);
+  assert.ok(result.fftRel < 1e-4, `FFT rel ${result.fftRel}`);
+  assert.ok(result.firRel < 1e-4, `FIR rel ${result.firRel}`);
 });
