@@ -185,6 +185,19 @@ test('A8 headless Chromium loads a first field frame at 1100x800 with no console
     if (existsSync(join(root, 'src/signal.js')) && existsSync(join(root, 'src/rng.js'))) {
       await page.selectOption('#scheme', 'chirp');
       assert.equal(await page.locator('#ebn0-label').innerText(), 'SNR (per sample), dB');
+      const chirpFits = await page.evaluate(() => {
+        const sel = document.querySelector('#scheme');
+        const probe = document.createElement('span');
+        probe.textContent = 'Frequency sweep tone';
+        probe.style.font = getComputedStyle(sel).font;
+        probe.style.position = 'absolute';
+        probe.style.whiteSpace = 'nowrap';
+        document.body.append(probe);
+        const textWidth = probe.getBoundingClientRect().width;
+        probe.remove();
+        return textWidth <= sel.clientWidth - 28;
+      });
+      assert.equal(chirpFits, true, 'Frequency sweep tone is clipped in the signal-type dropdown');
       await page.selectOption('#scheme', 'bpsk');
       assert.equal(await page.locator('#ebn0-label').innerText(), 'Signal-to-noise per bit');
       await page.click('#run-link');

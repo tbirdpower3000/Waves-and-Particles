@@ -10,6 +10,7 @@ import { formatDt, mountField, softwareBackendLabel } from '../src/ui/field-pane
 import { courantDt } from '../src/fdtd.js';
 import * as fdtdLive from '../src/fdtd.js';
 import { createBus } from '../src/ui/bus.js';
+import { mountSignal } from '../src/ui/signal-panel.js';
 import {
   formatBer,
   mainCursor,
@@ -473,12 +474,13 @@ function words(text) {
 
 function recordingCanvas(width = 320, height = 180) {
   const text = [];
+  const placed = [];
+  const rects = [];
   const arcs = [];
   const ctx = {
     setTransform() {},
     clearRect() {},
     fillRect() {},
-    strokeRect() {},
     beginPath() {},
     moveTo() {},
     lineTo() {},
@@ -487,11 +489,17 @@ function recordingCanvas(width = 320, height = 180) {
     fill() {},
     save() {},
     restore() {},
-    arc(_x, _y, radius) { arcs.push(radius); },
-    fillText(value) { text.push(String(value)); },
+    strokeRect(x, y, w, h) { rects.push({ x, y, w, h }); },
+    arc(x, y, radius) { arcs.push({ x, y, r: radius }); },
+    fillText(value, x, y) {
+      text.push(String(value));
+      placed.push({ value: String(value), x, y });
+    },
   };
   return {
     text,
+    placed,
+    rects,
     arcs,
     canvas: {
       width,
@@ -519,6 +527,10 @@ test('plain labels, tooltips, and the flagged readout fixes', () => {
   assert.match(html, />Wave field</);
   assert.match(html, />Radio channel</);
   assert.match(html, />Digital link test</);
+  assert.match(html, /Received signal vs time/);
+  assert.match(html, /Each cell is a small square; the view is scaled to fit/);
+  assert.match(html, />Simulator unavailable</);
+  assert.match(html, /A software renderer such as SwiftShader, llvmpipe, or softpipe is unverified/);
 
   const titles = [...html.matchAll(/\btitle="([^"]*)"/g)].map((match) => match[1]
     .replace(/&quot;/g, '"')
@@ -567,9 +579,10 @@ test('plain labels, tooltips, and the flagged readout fixes', () => {
     for (const line of sample.text) drawn.add(line);
   }
   for (const line of [
-    AXIS_LABELS.probeX,
+    'Time (steps, ns)',
     AXIS_LABELS.probeY,
     AXIS_LABELS.probeScale,
+    AXIS_LABELS.spectrumCycles,
     AXIS_LABELS.spectrumX,
     AXIS_LABELS.spectrumY,
     AXIS_LABELS.inPhase,
@@ -586,8 +599,123 @@ test('plain labels, tooltips, and the flagged readout fixes', () => {
   ]) {
     assert.ok(drawn.has(line), line);
   }
-  assert.ok(qpsk.arcs[0] > 0 && bpsk.arcs[0] > 0);
+  const bpskRadius = circleDataRadius(bpsk.arcs, { i: 1, q: 0 });
+  const qpskRadius = circleDataRadius(qpsk.arcs, { i: 1, q: 1 });
+  assert.ok(Math.abs(bpskRadius - 1) < 1e-6, `BPSK circle data radius ${bpskRadius}`);
+  assert.ok(Math.abs(qpskRadius - Math.SQRT2) < 1e-6, `QPSK circle data radius ${qpskRadius}`);
+  const legend = ber.placed.find((item) => item.value === AXIS_LABELS.berLegend);
+  const frame = ber.rects[0];
+  assert.ok(legend && frame && legend.y < frame.y - 1, 'BER legend overlaps the plot top');
+  assertProbeChannelNote();
 });
+
+function circleDataRadius(arcs, point) {
+  const circle = arcs.find((arc) => arc.r > 2);
+  const dot = arcs.find((arc) => arc.r > 0 && arc.r <= 2);
+  assert.ok(circle && dot, 'constellation circle or symbol dot was not drawn');
+  const scale = Math.hypot(dot.x - circle.x, dot.y - circle.y) / Math.hypot(point.i, point.q);
+  return circle.r / scale;
+}
+
+function assertProbeChannelNote() {
+  const nodes = new Map();
+  function createElement(tag) {
+    const node = {
+      tag,
+      id: '',
+      value: '',
+      textContent: '',
+      title: '',
+      disabled: false,
+      dataset: {},
+      style: {},
+      children: [],
+      options: [],
+      listeners: {},
+      parentElement: null,
+      classList: { add() {}, remove() {} },
+      setAttribute() {},
+      getAttribute() { return null; },
+      addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
+      removeEventListener() {},
+      append(...kids) {
+        this.children.push(...kids);
+        this.options.push(...kids);
+      },
+      replaceChildren(...kids) {
+        this.children = [...kids];
+        this.options = [...kids];
+      },
+      getContext() { return this._ctx; },
+      getBoundingClientRect() { return { width: 320, height: 180, left: 0, top: 0 }; },
+      width: 320,
+      height: 180,
+      clientWidth: 320,
+      clientHeight: 180,
+    };
+    return node;
+  }
+  function add(id, tag, extra = {}) {
+    const node = createElement(tag);
+    node.id = id;
+    Object.assign(node, extra);
+    nodes.set(id, node);
+    return node;
+  }
+  const texts = [];
+  const arcs = [];
+  const ctx = {
+    setTransform() {}, clearRect() {}, fillRect() {}, strokeRect() {},
+    beginPath() {}, moveTo() {}, lineTo() {}, closePath() {},
+    stroke() {}, fill() {}, save() {}, restore() {},
+    arc(x, y, r) { arcs.push({ x, y, r }); },
+    fillText(value) { texts.push(String(value)); },
+  };
+  for (const id of ['signal-state', 'signal-note', 'ebn0-out', 'ebn0-label', 'ebn0-unit', 'ebn0-caption', 'ber-readout']) {
+    add(id, 'span');
+  }
+  add('scheme', 'select', { value: 'bpsk' });
+  add('channel-source', 'select', { value: 'identity' });
+  add('seed', 'input', { value: '1' });
+  add('ebn0', 'input', { value: '6' });
+  add('run-link', 'button');
+  add('sweep-ber', 'button');
+  for (const id of ['constellation', 'ber-plot', 'spectrum']) {
+    const canvas = add(id, 'canvas');
+    canvas._ctx = ctx;
+    canvas.parentElement = createElement('div');
+  }
+  const previous = { document: globalThis.document, ResizeObserver: globalThis.ResizeObserver };
+  globalThis.document = {
+    getElementById: (id) => nodes.get(id) ?? null,
+    createElement,
+    querySelectorAll: () => [],
+    addEventListener() {},
+  };
+  globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+  try {
+    const bus = createBus();
+    mountSignal(document, bus, { seed: 1, ebn0: 6 });
+    bus.emit('impulse', { probes: [{ samples: [1, 0.2, 0] }] });
+    const channel = nodes.get('channel-source');
+    channel.value = '0';
+    for (const fn of channel.listeners.change ?? []) fn();
+    assert.ok(texts.includes('Probe channel: the line ignores echoes.'), texts.join(' | '));
+    const bpskCircle = arcs.filter((arc) => arc.r > 2).at(-1);
+    texts.length = 0;
+    arcs.length = 0;
+    const scheme = nodes.get('scheme');
+    scheme.value = 'qpsk';
+    for (const fn of scheme.listeners.change ?? []) fn();
+    const qpskCircle = arcs.find((arc) => arc.r > 2);
+    assert.ok(bpskCircle && qpskCircle, 'scheme switch did not draw a reference circle');
+    const ratio = qpskCircle.r / bpskCircle.r;
+    assert.ok(Math.abs(ratio - 1.2) < 1e-6, `QPSK/BPSK circle pixel ratio ${ratio}`);
+  } finally {
+    globalThis.document = previous.document;
+    globalThis.ResizeObserver = previous.ResizeObserver;
+  }
+}
 
 test('software renderers are named, and the perf note stays with field-core', () => {
   assert.equal(softwareBackendLabel('llvmpipe'), 'software renderer (llvmpipe)');
@@ -734,6 +862,15 @@ test('a GPU record waits for the backend switch and matches the CPU impulse', as
     };
     const field = mountField(document, createBus(), { nx: 32, ny: 32, pml: 4 });
     await field.setContract(contract);
+    const readoutEl = document.getElementById('field-readout');
+    const readout = readoutEl.children.map((node) => node.textContent).join(' ');
+    assert.match(readout, /Current mode: Electromagnetic mode/);
+    assert.match(readout, /Last action:/);
+    assert.match(readout, /Simulation speed:/);
+    assert.doesNotMatch(readout, /\btmz\b/);
+    const speedTip = readoutEl.children.find((node) => typeof node === 'object' && String(node.textContent).startsWith('Simulation speed'));
+    assert.match(speedTip.title, /inside the solver step/);
+    assert.doesNotMatch(speedTip.title, /real time/);
     await field.recordImpulse();
     const cpu = document.getElementById('field-canvas').__recordedProbes;
     assert.ok(cpu?.[0]?.samples?.length > 16, 'CPU record produced no impulse');

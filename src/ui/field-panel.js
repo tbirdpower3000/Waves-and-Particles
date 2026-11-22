@@ -116,29 +116,29 @@ export function mountField(doc, bus, params = {}) {
     const name = activeBackend();
     el.textContent = name;
     el.dataset.backend = name;
+    el.title = 'cpu or webgpu/webgl2. Graphics results match the CPU within a small tolerance. A software renderer such as SwiftShader, llvmpipe, or softpipe is unverified.';
   }
 
   function updateReadout() {
     const threads = globalThis.navigator?.hardwareConcurrency ?? '?';
+    const modeName = scene.mode === 'scalar' ? 'Simple wave mode' : 'Electromagnetic mode';
     const parts = [
-      [message, 'The most recent event, such as running, paused, grid rebuilt or an input error.'],
-      [`${scene.nx}x${scene.ny} cells`, 'Number of cells across × down. Each cell is 1 m, so the default grid is 512 m square.'],
-      [scene.mode, 'Which wave model is active. See the TMz and Scalar buttons.'],
-      [`dt ${formatDt(grid?.dt)}`, "Simulated time per step, set just under the 2D stability limit. It's about 2.3 nanoseconds here."],
-      [`step ${steps}`, 'How many time steps have been simulated since the last reset.'],
-      [`${rate.toFixed(0)} solver step/s`, 'Time steps computed per second of real time.'],
-      [`${fps.toFixed(0)} frames/s`, 'Picture updates per second on your screen.'],
-      [`backend ${activeBackend()}`, 'Same as the badge in the panel header: cpu, webgpu or webgl2.'],
-      [`threads ${threads}`, "Logical CPU cores your browser reports. It's for information only."],
+      ['Last action', message, 'The most recent event, such as running, paused, grid rebuilt or an input error.'],
+      ['Grid size', `${scene.nx}x${scene.ny} cells`, 'Number of cells across × down. Each cell is 1 m, so the default grid is 512 m square.'],
+      ['Current mode', modeName, 'Which wave model is active. See Electromagnetic mode and Simple wave mode.'],
+      ['Time per step', `dt ${formatDt(grid?.dt)}`, "Simulated time per step, set just under the 2D stability limit. It's about 2.3 nanoseconds here."],
+      ['Steps so far', String(steps), 'How many time steps have been simulated since the last reset.'],
+      ['Simulation speed', `${rate.toFixed(0)} solver step/s`, 'Time steps per second of time spent inside the solver step, excluding drawing.'],
+      ['Screen refresh rate', `${fps.toFixed(0)} frames/s`, 'Picture updates per second on your screen.'],
+      ['Compute engine', activeBackend(), 'cpu or webgpu/webgl2. Graphics results match the CPU within a small tolerance. A software renderer such as SwiftShader, llvmpipe, or softpipe is unverified.'],
+      ['Processor threads', String(threads), "Logical CPU cores your browser reports. It's for information only."],
+      ['Cell under cursor', hover ? `${hover.i},${hover.j}` : '—', 'Column and row of the grid cell your pointer is over.'],
     ];
-    if (hover) {
-      parts.push([`cell ${hover.i},${hover.j}`, 'Column and row of the grid cell your pointer is over.']);
-    }
     readout.replaceChildren();
-    parts.forEach(([text, tip], index) => {
+    parts.forEach(([name, value, tip], index) => {
       if (index) readout.append(' · ');
       const span = document.createElement('span');
-      span.textContent = text;
+      span.textContent = `${name}: ${value}`;
       span.title = tip;
       readout.append(span);
     });
@@ -196,6 +196,7 @@ export function mountField(doc, bus, params = {}) {
   function emitSamples(probes) {
     const list = Array.isArray(probes) ? probes : Array.from(probes ?? []);
     bus.emit('samples', {
+      dt: grid?.dt,
       probes: list.map((probe, index) => ({
         index,
         i: probe?.i ?? scene.probes[index]?.i,
@@ -460,7 +461,7 @@ export function mountField(doc, bus, params = {}) {
     }));
     recording = false;
     message = `recorded ${steps} steps`;
-    bus.emit('impulse', { probes: list });
+    bus.emit('impulse', { dt: grid?.dt, probes: list });
     updateReadout();
   }
 

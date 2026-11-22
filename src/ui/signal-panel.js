@@ -119,6 +119,8 @@ export function mountSignal(doc, bus, params = {}) {
     drawSpectrum(spectrum, spectrumValues, {
       empty: missing ? 'module not ready' : 'no spectrum',
       warn: missing,
+      unit: scheme === 'chirp' ? 'Hz' : 'cycles/sample',
+      fs: scheme === 'chirp' ? CHIRP.fs : 1,
     });
   }
 

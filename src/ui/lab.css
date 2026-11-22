@@ -254,8 +254,22 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; }
 .plot {
   min-height: 0;
   display: grid;
-  grid-template-rows: 14px minmax(0, 1fr);
+  grid-template-rows: auto minmax(0, 1fr);
 }
+
+.plot-head { min-width: 0; }
+
+.plot-key {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1px 8px;
+  margin: 0;
+  color: var(--muted);
+  font-size: 10px;
+  line-height: 1.3;
+}
+
+.toolbar .plot-key { flex-basis: 100%; }
 
 .plot-label {
   color: var(--muted);
@@ -271,6 +285,8 @@ canvas { display: block; width: 100%; height: 100%; touch-action: none; }
   gap: 4px 8px;
   align-items: end;
 }
+
+label.scheme { grid-column: 1 / -1; }
 
 .controls .wide, .controls input[type="range"], .controls .row, .controls .note {
   grid-column: 1 / -1;

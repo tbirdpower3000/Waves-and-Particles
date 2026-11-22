@@ -17,6 +17,7 @@ export function mountChannel(doc, bus) {
   let ready = false;
   let live = [];
   let frozen = [];
+  let sampleDt = null;
 
   function traces() {
     return frozen.length ? frozen : live;
@@ -35,6 +36,7 @@ export function mountChannel(doc, bus) {
         color: PROBE_COLORS[index],
         empty: ready ? 'no samples' : COMING_SOON_TEXT,
         warn: !ready,
+        dt: sampleDt,
       });
     });
   }
@@ -42,10 +44,12 @@ export function mountChannel(doc, bus) {
   button.addEventListener('click', () => bus.emit('record-request'));
   bus.on('samples', (payload) => {
     live = payload?.probes ?? [];
+    if (Number.isFinite(payload?.dt)) sampleDt = payload.dt;
     draw();
   });
   bus.on('impulse', (payload) => {
     frozen = payload?.probes ?? [];
+    if (Number.isFinite(payload?.dt)) sampleDt = payload.dt;
     note.textContent = frozen.length
       ? `frozen pulse response, ${frozen.length} probe${frozen.length === 1 ? '' : 's'}`
       : '';

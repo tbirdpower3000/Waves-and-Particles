@@ -197,18 +197,22 @@ export const AXIS_LABELS = {
   probeX: 'Time',
   probeY: 'Relative field strength',
   probeScale: '(each scaled to its own peak)',
+  probeSteps: 'steps',
+  probeNs: 'ns',
   inPhase: 'In-phase (I)',
   quadrature: 'Quadrature (Q)',
   unitCircle: '|s| = 1',
   qpskCircle: '|s| = √2',
   chirpPath: 'Chirp trajectory',
-  berX: 'Eb/N0',
+  berX: 'Eb/N0 (dB)',
   berY: 'Bit error rate (log)',
   berLegend: 'Theory: AWGN, no multipath',
   berDecades: ['1e-1', '1e-2', '1e-3', '1e-4', '1e-5', '1e-6'],
   berTicks: ['-2', '0', '2', '4', '6', '8', '10', '12'],
   spectrumX: '0 to fs/2 (positive frequencies)',
-  spectrumY: 'Relative level',
+  spectrumY: 'dB re peak',
+  spectrumHz: 'Hz',
+  spectrumCycles: 'cycles/sample',
   unavailable: 'Simulator unavailable',
 };
 
@@ -230,7 +234,7 @@ function emptyLabel(ctx, box, text, warn) {
   ctx.fillText(text, box.left, (box.top + box.bottom) / 2);
 }
 
-export function drawSeries(canvas, data, { color = '#2ee6c7', empty = 'no samples', warn = false } = {}) {
+export function drawSeries(canvas, data, { color = '#2ee6c7', empty = 'no samples', warn = false, dt = null } = {}) {
   const { ctx, width, height } = fitCanvas(canvas);
   const box = plotFrame(ctx, width, height);
   box.top += 22;
@@ -261,7 +265,18 @@ export function drawSeries(canvas, data, { color = '#2ee6c7', empty = 'no sample
   axisFont(ctx, 8);
   ctx.fillText(AXIS_LABELS.probeY, 4, 9);
   ctx.fillText(AXIS_LABELS.probeScale, 4, 19);
-  ctx.fillText(AXIS_LABELS.probeX, box.left, height - 3);
+  const n = data?.length ?? 0;
+  const stepDt = Number.isFinite(dt) ? dt : null;
+  ctx.fillText(`${AXIS_LABELS.probeX} (${AXIS_LABELS.probeSteps}, ${AXIS_LABELS.probeNs})`, box.left, height - 3);
+  if (n > 0) {
+    const marks = n === 1 ? [0] : [0, Math.round((n - 1) / 2), n - 1];
+    const plotW = box.right - box.left;
+    for (const step of marks) {
+      const x = box.left + (n === 1 ? plotW / 2 : (step / (n - 1)) * plotW);
+      ctx.fillText(String(step), x, box.bottom + 9);
+      if (stepDt != null) ctx.fillText(`${(step * stepDt * 1e9).toFixed(1)} ns`, x, box.bottom + 18);
+    }
+  }
 }
 
 export function drawConstellation(canvas, points, {
@@ -304,6 +319,12 @@ export function drawConstellation(canvas, points, {
   ctx.fillText(circleLabel, cx + radius * scale * 0.2, cy - radius * scale - 2);
   ctx.fillText(AXIS_LABELS.inPhase, box.left, height - 3);
   ctx.fillText(AXIS_LABELS.quadrature, 4, box.top + 8);
+  for (const tick of [-1, 0, 1]) {
+    if (Math.abs(tick) <= max) {
+      ctx.fillText(String(tick), X(tick) - 3, cy + 10);
+      ctx.fillText(String(tick), cx + 3, Y(tick) + 3);
+    }
+  }
   if (trajectory) ctx.fillText(AXIS_LABELS.chirpPath, box.left, 10);
   if (!points?.length) {
     emptyLabel(ctx, box, empty, warn);
@@ -331,7 +352,7 @@ export function drawConstellation(canvas, points, {
   }
 }
 
-export function drawSpectrum(canvas, values, { empty = 'no spectrum', warn = false } = {}) {
+export function drawSpectrum(canvas, values, { empty = 'no spectrum', warn = false, unit = AXIS_LABELS.spectrumCycles, fs = 1 } = {}) {
   const { ctx, width, height } = fitCanvas(canvas);
   const box = plotFrame(ctx, width, height);
   box.top += 12;
@@ -363,15 +384,23 @@ export function drawSpectrum(canvas, values, { empty = 'no spectrum', warn = fal
   }
   axisFont(ctx, 8);
   ctx.fillText(AXIS_LABELS.spectrumY, 4, 10);
-  ctx.fillText(AXIS_LABELS.spectrumX, box.left, height - 3);
+  ctx.fillText(AXIS_LABELS.spectrumX, box.left, height - 12);
+  ctx.fillText(unit, box.left, height - 3);
+  const plotW = box.right - box.left;
+  const ticks = unit === AXIS_LABELS.spectrumHz
+    ? [[0, '0'], [0.5, String(Math.round(fs / 4))], [1, String(Math.round(fs / 2))]]
+    : [[0, '0'], [0.5, '0.25'], [1, '0.5']];
+  for (const [frac, label] of ticks) {
+    ctx.fillText(label, box.left + frac * plotW, box.bottom + 9);
+  }
 }
 
 export function drawBer(canvas, { theory = [], simulated = [], markerDb = null, note = '', legend = '', warn = false } = {}) {
   const { ctx, width, height } = fitCanvas(canvas);
   const box = plotFrame(ctx, width, height);
   box.left = 40;
-  box.top = note && legend ? 32 : 16;
-  box.bottom = Math.max(box.top + 16, height - 16);
+  box.top = legend ? (note ? 40 : 30) : 16;
+  box.bottom = Math.max(box.top + 16, height - 18);
   box.right = Math.max(box.left + 16, width - 8);
   const x0 = -2;
   const x1 = 12;
@@ -395,8 +424,8 @@ export function drawBer(canvas, { theory = [], simulated = [], markerDb = null, 
     const db = Number(label);
     ctx.fillText(label, X(db) - 4, box.bottom + 10);
   });
-  ctx.fillText(AXIS_LABELS.berX, Math.max(box.left + 8, box.right - 36), 9);
-  if (legend) ctx.fillText(legend, box.left, 19);
+  ctx.fillText(AXIS_LABELS.berX, Math.max(box.left + 8, box.right - 64), 9);
+  if (legend) ctx.fillText(legend, box.left, 20);
   if (theory.length === 0 && simulated.length === 0) {
     if (note) emptyLabel(ctx, box, note, warn);
     return;
@@ -425,6 +454,6 @@ export function drawBer(canvas, { theory = [], simulated = [], markerDb = null, 
   }
   if (note) {
     axisFont(ctx, 8);
-    ctx.fillText(note, box.left, legend ? 29 : 19);
+    ctx.fillText(note, box.left, legend ? 31 : 20);
   }
 }
