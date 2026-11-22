@@ -8,8 +8,8 @@ No build step. Browser loads ES modules from `src/` via `<script type="module">`
 | `src/fdtd.js`, `src/gpu/*` , `tests/fdtd*.test.js` | Field-core agent |
 | `src/signal.js`, `src/rng.js`, `src/gpu-signal/*`, `tests/signal*.test.js`, `tests/rng*.test.js`, `tests/gpu-signal-harness.js` | Signal agent |
 | `index.html`, `src/ui/*`, `.github/workflows/ci.yml`, `README.md`, `package.json`, `package-lock.json`, `tests/smoke*.test.js`, `tests/dev-mocks.js` | UI/CI agent |
-| `docs/fdtd-perf.md` | Field-core agent |
-| `docs/*` | scaffold only, except `docs/fdtd-perf.md` and amendments Code Lab names in this file |
+| `docs/fdtd-perf.md`, `docs/gpu-probe-stream.md` | Field-core agent |
+| `docs/*` | scaffold only, except `docs/fdtd-perf.md`, `docs/gpu-probe-stream.md`, and amendments Code Lab names in this file |
 
 ## src/fdtd.js (pure JS, CPU reference; float64)
 ```js
@@ -58,4 +58,4 @@ export function fftMag(sig)                                         // -> Float6
 ## Amendment r1.2 (2026-11-22, Code Lab)
 - Owner C also owns `package-lock.json` and `tests/dev-mocks.js`.
 - Owner C may edit `docs/CONTRACT.md` only for amendments Code Lab names.
-- Field-core agent (A) owns `docs/fdtd-perf.md`. The other files under `docs/` stay scaffold-only, except amendments Code Lab names in this file.
+- Field-core agent (A) owns `docs/fdtd-perf.md` and `docs/gpu-probe-stream.md`. The other files under `docs/` stay scaffold-only, except amendments Code Lab names in this file.

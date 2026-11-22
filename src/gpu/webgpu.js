@@ -399,9 +399,12 @@ export async function createWebGPUStepper(grid) {
   let fullFieldReads = 0;
   let materialBytesUploaded = 0;
   let paint = null;
+  const MAX_IN_FLIGHT = 2;
+  let inFlight = 0;
   let settled = Promise.resolve();
   let failure = null;
   let pumping = false;
+  let afterIdle = async () => {};
   const gx = Math.ceil(nx / 8);
   const gy = Math.ceil(ny / 8);
 
@@ -566,6 +569,7 @@ export async function createWebGPUStepper(grid) {
       encoder.copyBufferToBuffer(histBuf, part.ringOffset * nProbes * 4, slot.buffer, 0, bytes);
     }
     device.queue.submit([encoder.finish()]);
+    inFlight += 1;
     if (draw && paint) {
       const drawEncoder = device.createCommandEncoder();
       paint(drawEncoder);
@@ -578,7 +582,7 @@ export async function createWebGPUStepper(grid) {
     if (pumping) return;
     pumping = true;
     try {
-      while (jobs.length) {
+      while (jobs.length && inFlight < MAX_IN_FLIGHT) {
         const job = jobs[0];
         if (!job.prepared) {
           syncMaterials();
@@ -627,6 +631,7 @@ export async function createWebGPUStepper(grid) {
             slot.busy = false;
             if (gpuErrors.length) throw new Error(gpuErrors.join("\n"));
             appendProbes(data, part.chunk);
+            inFlight = Math.max(0, inFlight - 1);
             pump();
           });
           job.chain = job.chain.then(() => mapped);
@@ -639,6 +644,12 @@ export async function createWebGPUStepper(grid) {
           if (last) {
             jobs.shift();
             job.resolve();
+          }
+          if (inFlight >= MAX_IN_FLIGHT && jobs.length) {
+            device.queue.onSubmittedWorkDone().then(() => {
+              inFlight = 0;
+              pump();
+            });
           }
         }
       }
@@ -689,16 +700,21 @@ export async function createWebGPUStepper(grid) {
       while (pendingAcc.length) pendingAcc.pop().destroy();
     }
     if (gpuErrors.length) throw new Error(gpuErrors.join("\n"));
+    await afterIdle();
   }
 
   function createView(canvas, opts = {}) {
     const scale = opts.scale ?? 1;
     const stepsPerFrame = opts.stepsPerFrame ?? 1;
-    const context = canvas.getContext("webgpu");
-    if (!context) throw new Error("canvas has no webgpu context");
-    const format = navigator.gpu.getPreferredCanvasFormat();
+    if (canvas.parentNode == null && typeof document !== "undefined" && document.body) {
+      document.body.appendChild(canvas);
+    }
     canvas.width = nx;
     canvas.height = ny;
+    const offscreen = new OffscreenCanvas(nx, ny);
+    const context = offscreen.getContext("webgpu");
+    if (!context) throw new Error("canvas has no webgpu context");
+    const format = navigator.gpu.getPreferredCanvasFormat();
     context.configure({ device, format, alphaMode: "opaque" });
     const drawParams = new ArrayBuffer(16);
     new Uint32Array(drawParams).set([nx, ny]);
@@ -754,7 +770,6 @@ export async function createWebGPUStepper(grid) {
     }
 
     async function readDrawn() {
-      await idle();
       const encoder = device.createCommandEncoder();
       encoder.copyTextureToBuffer(
         { texture: color },
@@ -767,8 +782,32 @@ export async function createWebGPUStepper(grid) {
       const out = new Uint8ClampedArray(nx * ny * 4);
       for (let j = 0; j < ny; j++) out.set(raw.subarray(j * bytesPerRow, j * bytesPerRow + nx * 4), j * nx * 4);
       stage.unmap();
+      const ctx2d = canvas.getContext("2d", { willReadFrequently: true });
+      if (ctx2d) ctx2d.putImageData(new ImageData(out, nx, ny), 0, 0);
+      try {
+        const swap = context.getCurrentTexture();
+        const pass = device.createCommandEncoder();
+        const draw = pass.beginRenderPass({
+          colorAttachments: [
+            {
+              view: swap.createView(),
+              loadOp: "clear",
+              storeOp: "store",
+              clearValue: { r: 0, g: 0, b: 0, a: 1 },
+            },
+          ],
+        });
+        draw.setPipeline(drawPipe);
+        draw.setBindGroup(0, drawGroup);
+        draw.draw(3);
+        draw.end();
+        device.queue.submit([pass.finish()]);
+      } catch {
+        /* keep the putImageData bitmap when this headless swapchain rejects */
+      }
       return out;
-    }
+    };
+    afterIdle = () => readDrawn();
 
     return {
       backend: "webgpu",
@@ -811,6 +850,12 @@ export async function createWebGPUStepper(grid) {
           format: "f32",
         }
       : null,
+    get device() {
+      return device;
+    },
+    get framesInFlight() {
+      return inFlight;
+    },
     step,
     kick,
     idle,
