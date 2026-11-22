@@ -1,4 +1,4 @@
-# Waves-and-Particles module contract (WAP-001 r1)
+# Waves-and-Particles module contract (WAP-001 r1.2)
 
 No build step. Browser loads ES modules from `src/` via `<script type="module">`; Node (>=20) imports the same files in tests. No runtime npm deps. Playwright is a dev-only test dependency for the headless Chromium smoke; the other tests use `node:test` and `node:assert`.
 
@@ -7,8 +7,8 @@ No build step. Browser loads ES modules from `src/` via `<script type="module">`
 |---|---|
 | `src/fdtd.js`, `src/gpu/*` , `tests/fdtd*.test.js` | Field-core agent |
 | `src/signal.js`, `src/rng.js`, `tests/signal*.test.js`, `tests/rng*.test.js` | Signal agent |
-| `index.html`, `src/ui/*`, `.github/workflows/ci.yml`, `README.md`, `package.json`, `tests/smoke*.test.js` | UI/CI agent |
-| `docs/*` | scaffold only (read-only afterwards) |
+| `index.html`, `src/ui/*`, `.github/workflows/ci.yml`, `README.md`, `package.json`, `package-lock.json`, `tests/smoke*.test.js`, `tests/dev-mocks.js` | UI/CI agent |
+| `docs/*` | scaffold only, except amendments Code Lab names in this file |
 
 ## src/fdtd.js (pure JS, CPU reference; float64)
 ```js
@@ -50,3 +50,7 @@ export function fftMag(sig)                                         // -> Float6
 - `src/rng.js` additionally exports `splitmix32`, `sfc32` (non-cryptographic; never for tokens/IDs).
 - UI (owner C) MUST always pass offset, nSymbols and pRef through the channel path.
 - Test command: `node --test` from repo root (Node 20+); `package.json` has `"type":"module"`.
+
+## Amendment r1.2 (2026-11-22, Code Lab)
+- Owner C also owns `package-lock.json` and `tests/dev-mocks.js`.
+- Owner C may edit `docs/CONTRACT.md` only for amendments Code Lab names.
