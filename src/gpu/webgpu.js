@@ -111,6 +111,23 @@ fn ezMain(@builtin(global_invocation_id) gid: vec3u) {
   }
   field[here] = e + src[here];
 }
+
+struct ProbeU {
+  nProbes: u32,
+  stepIndex: u32,
+  stride: u32,
+  pad: u32,
+}
+@group(0) @binding(8) var<uniform> probeU: ProbeU;
+@group(0) @binding(9) var<storage, read> probeIndex: array<u32>;
+@group(0) @binding(10) var<storage, read_write> hist: array<f32>;
+
+@compute @workgroup_size(64)
+fn probeMain(@builtin(global_invocation_id) gid: vec3u) {
+  let p = gid.x;
+  if (p >= probeU.nProbes) { return; }
+  hist[probeU.stepIndex * probeU.stride + p] = field[probeIndex[p]];
+}
 `;
 
 function f32(src) {
@@ -157,6 +174,24 @@ function packMat(grid) {
   return out;
 }
 
+async function describeAdapter(adapter) {
+  let info = adapter.info ?? {};
+  if (typeof adapter.requestAdapterInfo === "function") {
+    try {
+      info = await adapter.requestAdapterInfo();
+    } catch {
+      info = adapter.info ?? info;
+    }
+  }
+  return {
+    vendor: info.vendor ?? "",
+    architecture: info.architecture ?? "",
+    device: info.device ?? "",
+    description: info.description ?? "",
+    isFallbackAdapter: adapter.isFallbackAdapter === true,
+  };
+}
+
 function packPml(grid) {
   const span = Math.max(grid.nx, grid.ny);
   const out = new Float32Array(8 * span);
@@ -176,6 +211,7 @@ export async function createWebGPUStepper(grid) {
   if (typeof navigator === "undefined" || !navigator.gpu) return null;
   const adapter = await navigator.gpu.requestAdapter();
   if (!adapter) return null;
+  const adapterInfo = await describeAdapter(adapter);
   const device = await adapter.requestDevice();
   const gpuErrors = [];
   device.addEventListener("uncapturederror", (event) => {
@@ -245,6 +281,14 @@ export async function createWebGPUStepper(grid) {
 
   const sources = grid.sources.map((s) => ({ ...s, acc: s.acc ?? 0 }));
   const probes = grid.probes.map((p) => ({ i: p.i, j: p.j, samples: p.samples.slice() }));
+  const probeIdx = new Uint32Array(Math.max(1, probes.length));
+  for (let i = 0; i < probes.length; i++) probeIdx[i] = probes[i].j * nx + probes[i].i;
+  const probeIndexBuf = storage(device, probeIdx);
+  const probeUniform = device.createBuffer({
+    size: 16,
+    usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
+  });
+  const probePipe = pipeline("probeMain");
   const delta = new Float32Array(n);
   const readback = new Float32Array(n);
   let time = grid.time;
@@ -268,8 +312,49 @@ export async function createWebGPUStepper(grid) {
     return readback.slice();
   }
 
-  async function doSteps(count) {
+  async function readProbeHist(histBuf, count) {
+    const nProbes = probes.length;
+    const floats = count * nProbes;
+    const bytes = Math.max(16, (floats * 4 + 15) & ~15);
+    const staging = device.createBuffer({
+      size: bytes,
+      usage: GPUBufferUsage.MAP_READ | GPUBufferUsage.COPY_DST,
+    });
+    const encoder = device.createCommandEncoder();
+    encoder.copyBufferToBuffer(histBuf, 0, staging, 0, bytes);
+    device.queue.submit([encoder.finish()]);
+    await staging.mapAsync(GPUMapMode.READ);
+    const data = new Float32Array(staging.getMappedRange()).slice(0, floats);
+    staging.unmap();
+    staging.destroy();
     for (let s = 0; s < count; s++) {
+      for (let q = 0; q < nProbes; q++) probes[q].samples.push(data[s * nProbes + q]);
+    }
+  }
+
+  async function doSteps(count) {
+    const nSteps = count | 0;
+    if (nSteps <= 0) return;
+    const nProbes = probes.length;
+    let histBuf = null;
+    let probeGroup = null;
+    if (nProbes) {
+      const bytes = Math.max(16, ((nSteps * nProbes * 4 + 15) & ~15));
+      histBuf = device.createBuffer({
+        size: bytes,
+        usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_SRC,
+      });
+      probeGroup = device.createBindGroup({
+        layout: probePipe.getBindGroupLayout(0),
+        entries: [
+          { binding: 1, resource: { buffer: buffers[1] } },
+          { binding: 8, resource: { buffer: probeUniform } },
+          { binding: 9, resource: { buffer: probeIndexBuf } },
+          { binding: 10, resource: { buffer: histBuf } },
+        ],
+      });
+    }
+    for (let s = 0; s < nSteps; s++) {
       time += grid.dt;
       delta.fill(0);
       for (let q = 0; q < sources.length; q++) {
@@ -279,6 +364,9 @@ export async function createWebGPUStepper(grid) {
         delta[cell] += accumulateSource(src, time);
       }
       device.queue.writeBuffer(buffers[6], 0, delta);
+      if (nProbes) {
+        device.queue.writeBuffer(probeUniform, 0, new Uint32Array([nProbes, s, nProbes, 0]));
+      }
       const encoder = device.createCommandEncoder();
       for (const name of ["hx", "hy", "ez"]) {
         const pass = encoder.beginComputePass();
@@ -287,16 +375,20 @@ export async function createWebGPUStepper(grid) {
         pass.dispatchWorkgroups(gx, gy);
         pass.end();
       }
-      device.queue.submit([encoder.finish()]);
-      if (gpuErrors.length) throw new Error(gpuErrors.join("\n"));
-      if (probes.length) {
-        const snap = await readFieldBuffer();
-        for (let q = 0; q < probes.length; q++) {
-          const pr = probes[q];
-          pr.samples.push(snap[pr.j * nx + pr.i]);
-        }
+      if (nProbes) {
+        const pass = encoder.beginComputePass();
+        pass.setPipeline(probePipe);
+        pass.setBindGroup(0, probeGroup);
+        pass.dispatchWorkgroups(Math.ceil(nProbes / 64));
+        pass.end();
       }
+      device.queue.submit([encoder.finish()]);
     }
+    if (nProbes) {
+      await readProbeHist(histBuf, nSteps);
+      histBuf.destroy();
+    }
+    if (gpuErrors.length) throw new Error(gpuErrors.join("\n"));
   }
 
   function step(count = 1) {
@@ -310,10 +402,13 @@ export async function createWebGPUStepper(grid) {
 
   return {
     backend: "webgpu",
+    adapter: adapterInfo,
     step,
     readField: () => pending.then(() => readFieldBuffer()),
     readProbes: () => probes.map((p) => ({ i: p.i, j: p.j, samples: p.samples })),
     destroy() {
+      probeIndexBuf.destroy();
+      probeUniform.destroy();
       for (const buffer of buffers) buffer.destroy();
       device.destroy();
     },

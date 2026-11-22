@@ -284,3 +284,68 @@ test("scalar mode propagates at c", () => {
   assert.ok(g.u && !g.Ez);
   log(`scalar PASS peak delay ${traveled.toFixed(2)} cells over a 30-cell path (c/sqrt(epsR))`);
 });
+
+test("wave phase speed within 0.5% of c after Yee correction", () => {
+  const dx = 1;
+  const cellsPerLambda = 40;
+  const f0 = C0 / (cellsPerLambda * dx);
+  const pml = 12;
+  const src = 48;
+  const x1 = 160;
+  const x2 = 320;
+  const g = createGrid({ nx: 420, ny: 4, dx, dy: dx, pml, periodicY: true });
+  for (let j = 0; j < g.ny; j++) addSource(g, { i: src, j, kind: "sine", f0, amp: 1 });
+  addProbe(g, { i: x1, j: 0 });
+  addProbe(g, { i: x2, j: 0 });
+  const sCourant = (C0 * g.dt) / dx;
+  const stepsPerCycle = 1 / (f0 * g.dt);
+  const arrive2 = Math.ceil((x2 - src) / sCourant + 6 * stepsPerCycle);
+  const nSteps = arrive2 + Math.ceil(10 * stepsPerCycle);
+  step(g, nSteps);
+  const phaseOf = (samples) => {
+    let re = 0;
+    let im = 0;
+    const w = 2 * Math.PI * f0 * g.dt;
+    for (let n = arrive2; n < nSteps; n++) {
+      const ph = w * (n + 1);
+      re += samples[n] * Math.cos(ph);
+      im += samples[n] * Math.sin(ph);
+    }
+    return Math.atan2(-im, re);
+  };
+  // 1D Yee relation at ky = 0: sin(ω dt/2) / S = sin(β dx/2).
+  const sinTerm = Math.sin((Math.PI * sCourant) / cellsPerLambda) / sCourant;
+  const betaDx = 2 * Math.asin(sinTerm);
+  const expected = betaDx * (x2 - x1);
+  let dphi = phaseOf(g.probes[0].samples) - phaseOf(g.probes[1].samples);
+  while (dphi < expected - Math.PI) dphi += 2 * Math.PI;
+  while (dphi > expected + Math.PI) dphi -= 2 * Math.PI;
+  const dist = (x2 - x1) * dx;
+  const measured = (2 * Math.PI * f0 * dist) / dphi;
+  const predicted = (2 * Math.PI * f0 * dx) / betaDx;
+  const corrected = measured / (predicted / C0);
+  const err = Math.abs(corrected - C0) / C0;
+  assert.ok(err < 0.005, `corrected speed ${corrected} c=${C0} err=${err}`);
+  log(
+    `wave-speed PASS measured vp=${measured.toExponential(6)} predicted=${predicted.toExponential(6)} (vp/c=${(predicted / C0).toFixed(6)} at ${cellsPerLambda} cells/λ); after correction err=${(100 * err).toFixed(4)}% of c`,
+  );
+});
+
+test("A9 CPU steps/s at 256^2 and 512^2", () => {
+  const report = (n, steps) => {
+    const g = createGrid({ nx: n, ny: n, dx: 1, dy: 1, pml: 8 });
+    const c = (n / 2) | 0;
+    const f0 = C0 / 20;
+    addSource(g, { i: c, j: c, kind: "sine", f0, amp: 1 });
+    step(g, 5);
+    const t0 = performance.now();
+    step(g, steps);
+    const seconds = (performance.now() - t0) / 1000;
+    const rate = steps / seconds;
+    assert.ok(rate > 0 && Number.isFinite(rate));
+    log(`A9 CPU ${n}^2 steps/s=${rate.toFixed(2)} (${steps} steps, Node ${process.version})`);
+    return rate;
+  };
+  report(256, 80);
+  report(512, 40);
+});
