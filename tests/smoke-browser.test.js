@@ -131,6 +131,11 @@ test('A8 headless Chromium loads a first field frame at 1100x800 with no console
     } else {
       assert.equal(await page.locator('#field-state').getAttribute('data-state'), 'ready');
       assert.match(await page.locator('#backend-label').innerText(), /cpu|webgpu|webgl2/);
+      assert.match(await page.locator('.subtitle').innerText(), /2D wave \+ radio link lab/);
+      assert.match(await page.locator('#record-ir').innerText(), /Record pulse response/);
+      assert.match(await page.locator('#field-readout').innerText(), /dt [\d.]+ ns/);
+      const plotHeights = await page.evaluate(() => ['#field-canvas', '#constellation', '#ber-plot', '#spectrum'].map((sel) => document.querySelector(sel).getBoundingClientRect().height));
+      for (const height of plotHeights) assert.ok(height > 24, `plot height ${height}`);
       await page.click('#play');
       await page.waitForFunction(() => Number(document.querySelector('#field-canvas')?.dataset.steps) >= 1, null, { timeout: 20000 });
       await page.click('#pause');
@@ -175,6 +180,10 @@ test('A8 headless Chromium loads a first field frame at 1100x800 with no console
     assert.equal(await page.getAttribute('#panel-field', 'data-mode'), 'tmz');
 
     if (existsSync(join(root, 'src/signal.js')) && existsSync(join(root, 'src/rng.js'))) {
+      await page.selectOption('#scheme', 'chirp');
+      assert.equal(await page.locator('#ebn0-label').innerText(), 'SNR (per sample), dB');
+      await page.selectOption('#scheme', 'bpsk');
+      assert.equal(await page.locator('#ebn0-label').innerText(), 'Signal-to-noise per bit');
       await page.click('#run-link');
       await page.waitForFunction(() => {
         const text = document.querySelector('#signal-note')?.textContent || '';

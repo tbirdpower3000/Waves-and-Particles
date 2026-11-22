@@ -79,13 +79,15 @@ export function mountSignal(doc, bus, params = {}) {
     channelEl.replaceChildren();
     const identity = doc.createElement('option');
     identity.value = 'identity';
-    identity.textContent = 'Identity';
+    identity.textContent = 'Perfect direct path';
+    identity.title = 'No echoes or loss. The signal arrives unchanged before noise is added.';
     channelEl.append(identity);
     recordings.forEach((row, index) => {
       if (!row?.samples?.length) return;
       const option = doc.createElement('option');
       option.value = String(index);
-      option.textContent = `Probe ${index + 1} (${row.samples.length})`;
+      option.textContent = `Probe ${index + 1} channel`;
+      option.title = `Uses probe ${index + 1}'s recorded pulse response, with ${row.samples.length} samples, as the echo pattern the signal passes through.`;
       channelEl.append(option);
     });
     const values = [...channelEl.options].map((option) => option.value);
@@ -94,16 +96,25 @@ export function mountSignal(doc, bus, params = {}) {
 
   function draw() {
     const missing = !ready();
+    const scheme = schemeEl.value;
     drawConstellation(constellation, points, {
       trajectory: trajectoryOn,
+      idealRadius: scheme === 'qpsk' ? Math.SQRT2 : 1,
+      circleLabel: scheme === 'qpsk' ? '|s| = √2' : '|s| = 1',
       empty: missing ? 'module not ready' : 'no samples',
       warn: missing,
     });
-    const scheme = schemeEl.value;
     if (scheme === 'chirp') {
-      drawBer(berPlot, { note: 'BER theory is defined for BPSK and QPSK', warn: false });
+      drawBer(berPlot, { note: 'No chirp error curve', warn: false });
     } else {
-      drawBer(berPlot, { theory, simulated, markerDb: currentDb() });
+      const probe = channelEl.value !== 'identity';
+      drawBer(berPlot, {
+        theory,
+        simulated,
+        markerDb: currentDb(),
+        legend: 'Theory: AWGN, no multipath',
+        note: probe ? 'Probe channel: the line ignores echoes.' : '',
+      });
     }
     drawSpectrum(spectrum, spectrumValues, {
       empty: missing ? 'module not ready' : 'no spectrum',
@@ -131,7 +142,7 @@ export function mountSignal(doc, bus, params = {}) {
   function applyResult(outcome, db, keepSimulated) {
     if (!outcome.ok) {
       reportLinkError(note, outcome.message);
-      berReadout.textContent = 'BER error';
+      berReadout.textContent = 'Bit error rate —';
       return;
     }
     const { result } = outcome;
@@ -140,7 +151,7 @@ export function mountSignal(doc, bus, params = {}) {
       points = trajectory(result.noisy.i, result.noisy.q, result.offset, result.span);
       spectrumValues = spectrumDb(contract.signal.ns.fftMag(windowed(result.noisy, result.offset, result.span)));
       simulated = [];
-      berReadout.textContent = 'BER —';
+      berReadout.textContent = 'Bit error rate —';
       note.textContent = `chirp offset ${result.offset}, pRef ${result.pRef.toExponential(2)}. No demodulator for chirp.`;
       return;
     }
@@ -149,7 +160,7 @@ export function mountSignal(doc, bus, params = {}) {
     spectrumValues = spectrumDb(contract.signal.ns.fftMag(windowed(result.noisy, result.offset, result.span)));
     if (!keepSimulated) simulated = [{ ebn0dB: db, ber: result.errorRate }];
     const shown = formatBer(result.errorRate, result.txBits.length);
-    berReadout.textContent = `BER ${shown}`;
+    berReadout.textContent = `Bit error rate ${shown}`;
     note.textContent = `BER ${shown} at ${db.toFixed(1)} dB, ${result.txBits.length} bits, offset ${result.offset}, pRef ${result.pRef.toExponential(2)}. Preview only; the 1e6-bit check is tests/signal.test.js.`;
   }
 
@@ -192,7 +203,7 @@ export function mountSignal(doc, bus, params = {}) {
     const gen = ++runGen;
     const scheme = schemeEl.value;
     if (sweep && scheme === 'chirp') {
-      reportLinkError(note, 'BER theory is defined for BPSK and QPSK');
+      reportLinkError(note, 'No chirp error curve');
       return;
     }
     note.textContent = 'running';
@@ -205,7 +216,7 @@ export function mountSignal(doc, bus, params = {}) {
         if (gen !== runGen) return;
         if (!outcome.ok) {
           reportLinkError(note, outcome.message);
-          berReadout.textContent = 'BER error';
+          berReadout.textContent = 'Bit error rate —';
           draw();
           return;
         }
@@ -220,10 +231,26 @@ export function mountSignal(doc, bus, params = {}) {
     }
   }
 
+  function syncNoiseLabel() {
+    const label = doc.getElementById('ebn0-label');
+    const unit = doc.getElementById('ebn0-unit');
+    const caption = doc.getElementById('ebn0-caption');
+    const chirp = schemeEl.value === 'chirp';
+    if (label) label.textContent = chirp ? 'SNR (per sample), dB' : 'Signal-to-noise per bit';
+    if (unit) unit.textContent = chirp ? '' : 'dB';
+    const tip = chirp
+      ? 'Per-sample signal power divided by noise density. The chirp has no bits, so this is not Eb/N0.'
+      : 'Received energy per bit divided by noise power density. Higher means cleaner. Each +3 dB doubles the ratio.';
+    if (caption) caption.title = tip;
+    ebn0El.title = tip;
+  }
+
+  channelEl.addEventListener('change', () => draw());
   schemeEl.addEventListener('change', () => {
     simulated = [];
     points = [];
     spectrumValues = new Float64Array(0);
+    syncNoiseLabel();
     drawTheory();
   });
   ebn0El.addEventListener('input', () => {
@@ -244,6 +271,7 @@ export function mountSignal(doc, bus, params = {}) {
   setReadyState(stateEl, 'checking', 'looking for src/signal.js and src/rng.js');
   setDisabled(true);
   fillChannels();
+  syncNoiseLabel();
   draw();
 
   return {
@@ -257,7 +285,7 @@ export function mountSignal(doc, bus, params = {}) {
         note.textContent = '';
       } else {
         setReadyState(stateEl, 'ready', 'main tap, region power');
-        note.textContent = 'Identity channel until a probe impulse is frozen.';
+        note.textContent = 'Perfect direct path until a probe pulse response is frozen.';
         drawTheory();
       }
       draw();

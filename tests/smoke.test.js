@@ -5,7 +5,9 @@ import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
 import { makeRng } from '../src/rng.js';
 import * as signal from '../src/signal.js';
-import { decimatePeaks } from '../src/ui/draw.js';
+import { AXIS_LABELS, decimatePeaks, drawBer, drawConstellation, drawSeries, drawSpectrum } from '../src/ui/draw.js';
+import { formatDt } from '../src/ui/field-panel.js';
+import { courantDt } from '../src/fdtd.js';
 import {
   formatBer,
   mainCursor,
@@ -460,4 +462,126 @@ test('README lists every test file and CI runs node --test on Node 20 and 22', (
       command,
     );
   }
+});
+
+function words(text) {
+  return text.trim().split(/\s+/).filter(Boolean);
+}
+
+function recordingCanvas(width = 320, height = 180) {
+  const text = [];
+  const arcs = [];
+  const ctx = {
+    setTransform() {},
+    clearRect() {},
+    fillRect() {},
+    strokeRect() {},
+    beginPath() {},
+    moveTo() {},
+    lineTo() {},
+    closePath() {},
+    stroke() {},
+    fill() {},
+    save() {},
+    restore() {},
+    arc(_x, _y, radius) { arcs.push(radius); },
+    fillText(value) { text.push(String(value)); },
+  };
+  return {
+    text,
+    arcs,
+    canvas: {
+      width,
+      height,
+      clientWidth: width,
+      clientHeight: height,
+      getBoundingClientRect() { return { width, height, left: 0, top: 0 }; },
+      getContext() { return ctx; },
+    },
+  };
+}
+
+test('plain labels, tooltips, and the flagged readout fixes', () => {
+  const html = read('index.html');
+  assert.match(html, />2D wave \+ radio link lab</);
+  assert.match(html, /A top-down view of a radio wave spreading across a 2D grid/);
+  assert.match(html, /What each receiver probe "heard" over time/);
+  assert.match(html, /Digital data is sent through that channel with added noise/);
+  assert.match(html, />Record pulse response</);
+  assert.match(html, /aria-label="Probe 1 pulse response"/);
+  assert.match(html, /aria-label="Probe 4 pulse response"/);
+  assert.doesNotMatch(html, /Record impulse|impulse response/);
+  assert.match(html, />Signal-to-noise per bit</);
+  assert.match(html, />Bit error rate —</);
+  assert.match(html, />Wave field</);
+  assert.match(html, />Radio channel</);
+  assert.match(html, />Digital link test</);
+
+  const titles = [...html.matchAll(/\btitle="([^"]*)"/g)].map((match) => match[1]
+    .replace(/&quot;/g, '"')
+    .replace(/&lt;/g, '<')
+    .replace(/&amp;/g, '&'));
+  assert.ok(titles.length >= 40, `title count ${titles.length}`);
+  for (const title of titles) {
+    assert.ok(words(title).length <= 25, title);
+  }
+  const buttons = [...html.matchAll(/<button\b[^>]*>([^<]+)<\/button>/g)].map((match) => match[1].trim());
+  for (const label of buttons) assert.ok(words(label).length <= 4, label);
+
+  const field = read('src/ui/field-panel.js');
+  assert.match(field, /cells per wavelength must be 8–64/);
+  assert.match(field, /recording pulse response/);
+  assert.doesNotMatch(field, /frequency stays between 8 and 64/);
+  assert.equal(formatDt(2.335e-9), '2.335 ns');
+  assert.equal(formatDt(courantDt(1, 1)), '2.335 ns');
+  assert.equal(formatDt(Number.NaN), '—');
+
+  const signal = read('src/ui/signal-panel.js');
+  assert.match(signal, /SNR \(per sample\), dB/);
+  assert.match(signal, /Theory: AWGN, no multipath/);
+  assert.match(signal, /Probe channel: the line ignores echoes\./);
+  assert.match(signal, /No chirp error curve/);
+  assert.match(signal, /\|s\| = √2/);
+
+  const drawn = new Set();
+  const probe = recordingCanvas();
+  drawSeries(probe.canvas, [0.2, -0.4, 0.1]);
+  const spectrum = recordingCanvas();
+  drawSpectrum(spectrum.canvas, [0, -12, -3]);
+  const ber = recordingCanvas();
+  drawBer(ber.canvas, {
+    theory: [{ ebn0dB: 6, ber: 1e-3 }],
+    legend: AXIS_LABELS.berLegend,
+    note: 'Probe channel: the line ignores echoes.',
+  });
+  const chirpBer = recordingCanvas();
+  drawBer(chirpBer.canvas, { note: 'No chirp error curve' });
+  const bpsk = recordingCanvas();
+  drawConstellation(bpsk.canvas, [{ i: 1, q: 0 }], { circleLabel: AXIS_LABELS.unitCircle, idealRadius: 1 });
+  const qpsk = recordingCanvas();
+  drawConstellation(qpsk.canvas, [{ i: 1, q: 1 }], { circleLabel: AXIS_LABELS.qpskCircle, idealRadius: Math.SQRT2 });
+  for (const sample of [probe, spectrum, ber, chirpBer, bpsk, qpsk]) {
+    for (const line of sample.text) drawn.add(line);
+  }
+  for (const line of [
+    AXIS_LABELS.probeX,
+    AXIS_LABELS.probeY,
+    AXIS_LABELS.probeScale,
+    AXIS_LABELS.spectrumX,
+    AXIS_LABELS.spectrumY,
+    AXIS_LABELS.inPhase,
+    AXIS_LABELS.quadrature,
+    AXIS_LABELS.unitCircle,
+    AXIS_LABELS.qpskCircle,
+    AXIS_LABELS.berX,
+    AXIS_LABELS.berY,
+    AXIS_LABELS.berLegend,
+    ...AXIS_LABELS.berDecades,
+    ...AXIS_LABELS.berTicks,
+    'No chirp error curve',
+    'Probe channel: the line ignores echoes.',
+  ]) {
+    assert.ok(drawn.has(line), line);
+  }
+  assert.ok(qpsk.arcs[0] > 0 && bpsk.arcs[0] > 0);
 });

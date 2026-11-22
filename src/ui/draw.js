@@ -183,7 +183,7 @@ export function drawField(canvas, view) {
   }
   paintOverlays(ctx, view, width, height);
   if (!solverReady) {
-    const label = view.holdLabel || 'coming soon';
+    const label = view.holdLabel || 'Simulator unavailable';
     ctx.fillStyle = 'rgba(8, 11, 16, 0.78)';
     ctx.fillRect(10, 10, Math.min(width - 20, 16 + label.length * 7), 22);
     ctx.fillStyle = '#ffd38a';
@@ -193,11 +193,35 @@ export function drawField(canvas, view) {
   return warning;
 }
 
+export const AXIS_LABELS = {
+  probeX: 'Time',
+  probeY: 'Relative field strength',
+  probeScale: '(each scaled to its own peak)',
+  inPhase: 'In-phase (I)',
+  quadrature: 'Quadrature (Q)',
+  unitCircle: '|s| = 1',
+  qpskCircle: '|s| = √2',
+  chirpPath: 'Chirp trajectory',
+  berX: 'Eb/N0',
+  berY: 'Bit error rate (log)',
+  berLegend: 'Theory: AWGN, no multipath',
+  berDecades: ['1e-1', '1e-2', '1e-3', '1e-4', '1e-5', '1e-6'],
+  berTicks: ['-2', '0', '2', '4', '6', '8', '10', '12'],
+  spectrumX: '0 to fs/2 (positive frequencies)',
+  spectrumY: 'Relative level',
+  unavailable: 'Simulator unavailable',
+};
+
 function plotFrame(ctx, width, height) {
   ctx.clearRect(0, 0, width, height);
   ctx.fillStyle = '#070b10';
   ctx.fillRect(0, 0, width, height);
   return { left: 32, right: Math.max(40, width - 8), top: 8, bottom: Math.max(16, height - 16) };
+}
+
+function axisFont(ctx, px = 9) {
+  ctx.font = `${px}px ui-monospace, monospace`;
+  ctx.fillStyle = '#93a3b5';
 }
 
 function emptyLabel(ctx, box, text, warn) {
@@ -209,40 +233,51 @@ function emptyLabel(ctx, box, text, warn) {
 export function drawSeries(canvas, data, { color = '#2ee6c7', empty = 'no samples', warn = false } = {}) {
   const { ctx, width, height } = fitCanvas(canvas);
   const box = plotFrame(ctx, width, height);
+  box.top += 22;
+  box.bottom = Math.max(box.top + 8, box.bottom - 12);
   if (!data || data.length === 0) {
     emptyLabel(ctx, box, empty, warn);
-    return;
+  } else {
+    const series = decimatePeaks(data, Math.max(2, Math.floor(box.right - box.left)));
+    let peak = 1e-12;
+    for (let i = 0; i < series.length; i++) peak = Math.max(peak, Math.abs(series[i]));
+    const plotW = box.right - box.left;
+    const plotH = box.bottom - box.top;
+    ctx.strokeStyle = '#243244';
+    ctx.beginPath();
+    ctx.moveTo(box.left, box.top + plotH / 2);
+    ctx.lineTo(box.right, box.top + plotH / 2);
+    ctx.stroke();
+    ctx.beginPath();
+    ctx.strokeStyle = color;
+    for (let i = 0; i < series.length; i++) {
+      const x = box.left + (series.length === 1 ? plotW / 2 : (i / (series.length - 1)) * plotW);
+      const y = box.top + plotH / 2 - (series[i] / peak) * (plotH / 2 - 2);
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
   }
-  const series = decimatePeaks(data, Math.max(2, Math.floor(box.right - box.left)));
-  let peak = 1e-12;
-  for (let i = 0; i < series.length; i++) peak = Math.max(peak, Math.abs(series[i]));
-  const plotW = box.right - box.left;
-  const plotH = box.bottom - box.top;
-  ctx.strokeStyle = '#243244';
-  ctx.beginPath();
-  ctx.moveTo(box.left, box.top + plotH / 2);
-  ctx.lineTo(box.right, box.top + plotH / 2);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.strokeStyle = color;
-  for (let i = 0; i < series.length; i++) {
-    const x = box.left + (series.length === 1 ? plotW / 2 : (i / (series.length - 1)) * plotW);
-    const y = box.top + plotH / 2 - (series[i] / peak) * (plotH / 2 - 2);
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
+  axisFont(ctx, 8);
+  ctx.fillText(AXIS_LABELS.probeY, 4, 9);
+  ctx.fillText(AXIS_LABELS.probeScale, 4, 19);
+  ctx.fillText(AXIS_LABELS.probeX, box.left, height - 3);
 }
 
-export function drawConstellation(canvas, points, { trajectory = false, empty = 'no samples', warn = false } = {}) {
+export function drawConstellation(canvas, points, {
+  trajectory = false,
+  idealRadius = 1,
+  circleLabel = AXIS_LABELS.unitCircle,
+  empty = 'no samples',
+  warn = false,
+} = {}) {
   const { ctx, width, height } = fitCanvas(canvas);
   const box = plotFrame(ctx, width, height);
-  if (!points?.length) {
-    emptyLabel(ctx, box, empty, warn);
-    return;
-  }
-  let max = 1.2;
-  for (const point of points) {
+  box.top += 12;
+  box.bottom = Math.max(box.top + 8, box.bottom - 12);
+  const radius = Number.isFinite(idealRadius) && idealRadius > 0 ? idealRadius : 1;
+  let max = Math.max(1.2, radius);
+  for (const point of points ?? []) {
     if (!Number.isFinite(point.i) || !Number.isFinite(point.q)) continue;
     max = Math.max(max, Math.abs(point.i), Math.abs(point.q));
   }
@@ -263,8 +298,17 @@ export function drawConstellation(canvas, points, { trajectory = false, empty = 
   ctx.stroke();
   ctx.beginPath();
   ctx.strokeStyle = 'rgba(46, 230, 199, 0.35)';
-  ctx.arc(cx, cy, scale, 0, Math.PI * 2);
+  ctx.arc(cx, cy, radius * scale, 0, Math.PI * 2);
   ctx.stroke();
+  axisFont(ctx, 8);
+  ctx.fillText(circleLabel, cx + radius * scale * 0.2, cy - radius * scale - 2);
+  ctx.fillText(AXIS_LABELS.inPhase, box.left, height - 3);
+  ctx.fillText(AXIS_LABELS.quadrature, 4, box.top + 8);
+  if (trajectory) ctx.fillText(AXIS_LABELS.chirpPath, box.left, 10);
+  if (!points?.length) {
+    emptyLabel(ctx, box, empty, warn);
+    return;
+  }
   ctx.beginPath();
   points.forEach((point, index) => {
     if (!Number.isFinite(point.i) || !Number.isFinite(point.q)) return;
@@ -290,40 +334,45 @@ export function drawConstellation(canvas, points, { trajectory = false, empty = 
 export function drawSpectrum(canvas, values, { empty = 'no spectrum', warn = false } = {}) {
   const { ctx, width, height } = fitCanvas(canvas);
   const box = plotFrame(ctx, width, height);
+  box.top += 12;
+  box.bottom = Math.max(box.top + 8, box.bottom - 12);
   if (!values || values.length === 0) {
     emptyLabel(ctx, box, empty, warn);
-    return;
+  } else {
+    const plotW = box.right - box.left;
+    const plotH = box.bottom - box.top;
+    let min = 0;
+    let max = -120;
+    for (let i = 0; i < values.length; i++) {
+      const v = values[i];
+      if (!Number.isFinite(v)) continue;
+      if (v < min) min = v;
+      if (v > max) max = v;
+    }
+    if (max <= min) max = min + 1;
+    ctx.beginPath();
+    ctx.strokeStyle = '#9b8cff';
+    for (let i = 0; i < values.length; i++) {
+      const v = Number.isFinite(values[i]) ? values[i] : min;
+      const x = box.left + (values.length === 1 ? 0 : (i / (values.length - 1)) * plotW);
+      const y = box.top + ((max - v) / (max - min)) * plotH;
+      if (i === 0) ctx.moveTo(x, y);
+      else ctx.lineTo(x, y);
+    }
+    ctx.stroke();
   }
-  const plotW = box.right - box.left;
-  const plotH = box.bottom - box.top;
-  let min = 0;
-  let max = -120;
-  for (let i = 0; i < values.length; i++) {
-    const v = values[i];
-    if (!Number.isFinite(v)) continue;
-    if (v < min) min = v;
-    if (v > max) max = v;
-  }
-  if (max <= min) max = min + 1;
-  ctx.beginPath();
-  ctx.strokeStyle = '#9b8cff';
-  for (let i = 0; i < values.length; i++) {
-    const v = Number.isFinite(values[i]) ? values[i] : min;
-    const x = box.left + (values.length === 1 ? 0 : (i / (values.length - 1)) * plotW);
-    const y = box.top + ((max - v) / (max - min)) * plotH;
-    if (i === 0) ctx.moveTo(x, y);
-    else ctx.lineTo(x, y);
-  }
-  ctx.stroke();
+  axisFont(ctx, 8);
+  ctx.fillText(AXIS_LABELS.spectrumY, 4, 10);
+  ctx.fillText(AXIS_LABELS.spectrumX, box.left, height - 3);
 }
 
-export function drawBer(canvas, { theory = [], simulated = [], markerDb = null, note = '', warn = false } = {}) {
+export function drawBer(canvas, { theory = [], simulated = [], markerDb = null, note = '', legend = '', warn = false } = {}) {
   const { ctx, width, height } = fitCanvas(canvas);
   const box = plotFrame(ctx, width, height);
-  if (note && theory.length === 0) {
-    emptyLabel(ctx, box, note, warn);
-    return;
-  }
+  box.left = 40;
+  box.top = note && legend ? 32 : 16;
+  box.bottom = Math.max(box.top + 16, height - 16);
+  box.right = Math.max(box.left + 16, width - 8);
   const x0 = -2;
   const x1 = 12;
   const plotW = box.right - box.left;
@@ -336,6 +385,22 @@ export function drawBer(canvas, { theory = [], simulated = [], markerDb = null, 
   };
   ctx.strokeStyle = '#243244';
   ctx.strokeRect(box.left + 0.5, box.top + 0.5, plotW, plotH);
+  axisFont(ctx, 8);
+  ctx.fillText(AXIS_LABELS.berY, 4, 9);
+  AXIS_LABELS.berDecades.forEach((label, index) => {
+    const rate = 10 ** -(index + 1);
+    ctx.fillText(label, 4, Y(rate) + 3);
+  });
+  AXIS_LABELS.berTicks.forEach((label) => {
+    const db = Number(label);
+    ctx.fillText(label, X(db) - 4, box.bottom + 10);
+  });
+  ctx.fillText(AXIS_LABELS.berX, Math.max(box.left + 8, box.right - 36), 9);
+  if (legend) ctx.fillText(legend, box.left, 19);
+  if (theory.length === 0 && simulated.length === 0) {
+    if (note) emptyLabel(ctx, box, note, warn);
+    return;
+  }
   if (markerDb != null && Number.isFinite(markerDb)) {
     ctx.strokeStyle = 'rgba(255, 176, 32, 0.35)';
     ctx.beginPath();
@@ -359,8 +424,7 @@ export function drawBer(canvas, { theory = [], simulated = [], markerDb = null, 
     ctx.fill();
   }
   if (note) {
-    ctx.fillStyle = '#93a3b5';
-    ctx.font = '10px ui-monospace, monospace';
-    ctx.fillText(note, box.left, box.top + 10);
+    axisFont(ctx, 8);
+    ctx.fillText(note, box.left, legend ? 29 : 19);
   }
 }

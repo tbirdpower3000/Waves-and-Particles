@@ -18,10 +18,9 @@ function must(id) {
   return el;
 }
 
-function fmt(value) {
-  if (!Number.isFinite(value)) return '—';
-  if (value !== 0 && (Math.abs(value) < 1e-2 || Math.abs(value) >= 1e4)) return value.toExponential(3);
-  return String(Math.round(value * 1000) / 1000);
+export function formatDt(seconds) {
+  if (!Number.isFinite(seconds)) return '—';
+  return `${(seconds * 1e9).toFixed(3)} ns`;
 }
 
 export function mountField(doc, bus, params = {}) {
@@ -99,19 +98,28 @@ export function mountField(doc, bus, params = {}) {
 
   function updateReadout() {
     const threads = globalThis.navigator?.hardwareConcurrency ?? '?';
-    const cell = hover ? `cell ${hover.i},${hover.j}` : '';
-    readout.textContent = [
-      message,
-      `${scene.nx}x${scene.ny}`,
-      scene.mode,
-      `dt ${fmt(grid?.dt)}`,
-      `step ${steps}`,
-      `${rate.toFixed(0)} solver step/s`,
-      `${fps.toFixed(0)} frames/s`,
-      `backend ${activeBackend()}`,
-      `threads ${threads}`,
-      cell,
-    ].filter(Boolean).join(' · ');
+    const parts = [
+      [message, 'The most recent event, such as running, paused, grid rebuilt or an input error.'],
+      [`${scene.nx}x${scene.ny} cells`, 'Number of cells across × down. Each cell is 1 m, so the default grid is 512 m square.'],
+      [scene.mode, 'Which wave model is active. See the TMz and Scalar buttons.'],
+      [`dt ${formatDt(grid?.dt)}`, "Simulated time per step, set just under the 2D stability limit. It's about 2.3 nanoseconds here."],
+      [`step ${steps}`, 'How many time steps have been simulated since the last reset.'],
+      [`${rate.toFixed(0)} solver step/s`, 'Time steps computed per second of real time.'],
+      [`${fps.toFixed(0)} frames/s`, 'Picture updates per second on your screen.'],
+      [`backend ${activeBackend()}`, 'Same as the badge in the panel header: cpu, webgpu or webgl2.'],
+      [`threads ${threads}`, "Logical CPU cores your browser reports. It's for information only."],
+    ];
+    if (hover) {
+      parts.push([`cell ${hover.i},${hover.j}`, 'Column and row of the grid cell your pointer is over.']);
+    }
+    readout.replaceChildren();
+    parts.forEach(([text, tip], index) => {
+      if (index) readout.append(' · ');
+      const span = document.createElement('span');
+      span.textContent = text;
+      span.title = tip;
+      readout.append(span);
+    });
   }
 
   function draw() {
@@ -130,7 +138,7 @@ export function mountField(doc, bus, params = {}) {
       scene,
       drag: drag ? { tool: drag.tool, rect: rectFromCells(drag.a, drag.b) } : null,
       solverReady,
-      holdLabel: solverReady ? '' : COMING_SOON_TEXT,
+      holdLabel: solverReady ? '' : 'Simulator unavailable',
       probeColors: PROBE_COLORS,
     });
     if (warning) message = warning;
@@ -200,7 +208,7 @@ export function mountField(doc, bus, params = {}) {
       grid = rebuildGrid(scene, contract.fdtd.ns, scene.source ? kind : null);
       stepper = cpuStepper(contract.fdtd.ns, grid);
       lastField = contract.fdtd.ns.snapshot(grid);
-      message = reason === 'record' ? 'recording impulse' : 'grid rebuilt';
+      message = reason === 'record' ? 'recording pulse response' : 'grid rebuilt';
     } catch (err) {
       gpuOn = false;
       message = err instanceof Error ? err.message : String(err);
@@ -557,12 +565,13 @@ export function mountField(doc, bus, params = {}) {
     const n = Number(must('freq').value);
     if (!Number.isInteger(n) || n < 8 || n > 64) {
       must('freq').value = String(scene.cellsPerLambda);
-      message = 'frequency stays between 8 and 64 cells per wavelength';
+      message = 'cells per wavelength must be 8–64';
       updateReadout();
       return;
     }
     scene.cellsPerLambda = n;
-    message = `${n} cells per wavelength`;
+    const mhz = 299792458 / n / 1e6;
+    message = `${n} cells per wavelength (≈${mhz.toFixed(1)} MHz)`;
     rebuild('time');
   });
 
