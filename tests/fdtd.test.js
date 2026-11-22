@@ -338,7 +338,7 @@ test("wave phase speed within 0.5% of c after Yee correction", () => {
   );
 });
 
-test("A9 CPU steps/s at 256^2 and 512^2", () => {
+test("A9 CPU steps/s at 256^2, 512^2, and 1024^2", () => {
   const report = (n, steps) => {
     const g = createGrid({ nx: n, ny: n, dx: 1, dy: 1, pml: 8 });
     const c = (n / 2) | 0;
@@ -355,4 +355,5 @@ test("A9 CPU steps/s at 256^2 and 512^2", () => {
   };
   report(256, 80);
   report(512, 40);
+  report(1024, 12);
 });

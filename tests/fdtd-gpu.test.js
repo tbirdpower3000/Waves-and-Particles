@@ -7,8 +7,9 @@ import net from "node:net";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { createGpuStepper } from "../src/gpu/index.js";
-import { createWebGL2Stepper } from "../src/gpu/webgl2.js";
+import { fieldToImage } from "../src/gpu/color.js";
+import { createGpuStepper, createGpuView } from "../src/gpu/index.js";
+import { classifyWebGLRenderer, createWebGL2Stepper } from "../src/gpu/webgl2.js";
 import { createWebGPUStepper } from "../src/gpu/webgpu.js";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -38,7 +39,8 @@ window.addEventListener("unhandledrejection", (event) => {
 </script>
 <script type="module">
 import { C0, createGrid, setMaterial, addSource, addProbe, step } from "/src/fdtd.js";
-import { createGpuStepper } from "/src/gpu/index.js";
+import { fieldToImage } from "/src/gpu/color.js";
+import { createGpuStepper, createGpuView } from "/src/gpu/index.js";
 
 function metrics(ref, other) {
   let num = 0, den = 0, peak = 0, maxAbs = 0;
@@ -97,27 +99,31 @@ try {
   }
   const perf = [];
   gpu.destroy();
-  for (const spec of [{ n: 256, steps: 40 }, { n: 512, steps: 20 }]) {
+  for (const spec of [{ n: 256, steps: 40 }, { n: 512, steps: 20 }, { n: 1024, steps: 8 }]) {
     const bench = createGrid({ nx: spec.n, ny: spec.n, dx: 1, dy: 1, pml: 8 });
     const c = (spec.n / 2) | 0;
     const f0b = C0 / 20;
     addSource(bench, { i: c, j: c, kind: "sine", f0: f0b, amp: 1 });
     const stepper = await createGpuStepper(bench, { backend });
     await stepper.step(2);
+    await stepper.idle();
     const t0 = performance.now();
-    await stepper.step(spec.steps);
-    await stepper.readField();
+    stepper.kick(spec.steps);
+    await stepper.idle();
     const seconds = (performance.now() - t0) / 1000;
     stepper.destroy();
     perf.push({ n: spec.n, steps: spec.steps, stepsPerSec: spec.steps / seconds });
   }
   const adapter = gpu.adapter || null;
   const text = adapter ? [adapter.vendor, adapter.architecture, adapter.device, adapter.description].join(" ") : "";
-  const software = !!(adapter && (adapter.isFallbackAdapter || /swiftshader|llvmpipe|softpipe|software/i.test(text)));
+  const software = !!(adapter && (adapter.software || adapter.isFallbackAdapter || /swiftshader|llvmpipe|softpipe|lavapipe|software/i.test(text)));
+  const hardware = !!(adapter && adapter.hardware === true && !software);
   if (gpu.fallbackReason) console.log("GPU auto-fallback: " + gpu.fallbackReason);
   window.__RESULT = {
     absent: false,
     software,
+    hardware,
+    unknown: !software && !hardware,
     backend: gpu.backend,
     adapter,
     fallbackReason: gpu.fallbackReason || "",
@@ -139,9 +145,9 @@ try {
 function serve() {
   const server = http.createServer((req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
-    if (url.pathname === "/harness.html") {
+    if (url.pathname === "/harness.html" || url.pathname === "/view.html") {
       res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-      res.end(HARNESS);
+      res.end(url.pathname === "/view.html" ? VIEW : HARNESS);
       return;
     }
     const rel = decodeURIComponent(url.pathname);
@@ -392,8 +398,49 @@ async function chromeResult(chrome, pageUrl) {
 
 test("gpu modules import on Node", () => {
   assert.equal(typeof createGpuStepper, "function");
+  assert.equal(typeof createGpuView, "function");
   assert.equal(typeof createWebGPUStepper, "function");
   assert.equal(typeof createWebGL2Stepper, "function");
+});
+
+test("CPU view draws the field without a GPU readback", async () => {
+  const { C0, createGrid, addSource, addProbe, step } = await import("../src/fdtd.js");
+  const make = () => {
+    const g = createGrid({ nx: 24, ny: 18, dx: 1, dy: 1, pml: 4 });
+    addSource(g, { i: 8, j: 9, kind: "sine", f0: C0 / 12, amp: 1 });
+    addProbe(g, { i: 12, j: 9 });
+    return g;
+  };
+  const preview = make();
+  step(preview, 16);
+  let peak = 0;
+  for (let i = 0; i < preview.field.length; i++) peak = Math.max(peak, Math.abs(preview.field[i]));
+  const grid = make();
+  const stored = { data: null };
+  const canvas = {
+    width: 0,
+    height: 0,
+    getContext(kind) {
+      if (kind !== "2d") return null;
+      return {
+        putImageData(image) {
+          stored.data = image.data;
+        },
+      };
+    },
+  };
+  const view = await createGpuView(canvas, grid, { scale: peak });
+  assert.equal(view.backend, "cpu");
+  assert.equal(view.probeStream, null);
+  view.frame(4);
+  view.frame(12);
+  const drawn = await view.readDrawn();
+  const cpu = make();
+  step(cpu, 16);
+  const expected = fieldToImage(cpu.field, cpu.nx, cpu.ny, peak);
+  assert.equal(view.fullFieldReads, 0);
+  assert.equal(drawn.length, expected.length);
+  for (let i = 0; i < drawn.length; i++) assert.equal(drawn[i], expected[i]);
 });
 
 test("A7 GPU vs CPU rel L2 < 1e-3 after 500 steps", async (t) => {
@@ -424,18 +471,19 @@ test("A7 GPU vs CPU rel L2 < 1e-3 after 500 steps", async (t) => {
     assert.fail(result.error);
   }
   const adapter = result.adapter || {};
-  console.log(`A7 adapter ${JSON.stringify(adapter)} software=${result.software === true}`);
+  if (result.fallbackReason) console.log(`GPU auto-fallback: ${result.fallbackReason}`);
+  const kindLabel = result.hardware ? "hardware" : result.software ? "software" : "unknown";
+  console.log(`A7 adapter ${JSON.stringify(adapter)} ${kindLabel}`);
   for (const row of result.rows) {
-    const kind = result.software ? "software" : "hardware";
+    const kind = kindLabel;
     console.log(
       `A7 ${result.backend} ${kind} n=${row.n} relL2=${row.relL2.toExponential(3)} max|d|/peak=${row.maxOverPeak.toExponential(3)} gpuPeak=${row.gpuPeak?.toExponential(3)} cpuPeak=${row.cpuPeak?.toExponential(3)}`,
     );
   }
   if (result.perf) {
     for (const row of result.perf) {
-      const kind = result.software ? "software" : "hardware";
       console.log(
-        `A9 GPU ${result.backend} ${kind} ${row.n}^2 steps/s=${row.stepsPerSec.toFixed(2)} (${row.steps} steps)`,
+        `A9 GPU ${result.backend} ${kindLabel} ${row.n}^2 steps/s=${row.stepsPerSec.toFixed(2)} (${row.steps} steps)`,
       );
     }
   }
@@ -444,15 +492,14 @@ test("A7 GPU vs CPU rel L2 < 1e-3 after 500 steps", async (t) => {
   assert.ok(at500.relL2 < 1e-3, `rel L2 ${at500.relL2}`);
   assert.ok(result.probeSamples === 2000, `probe samples ${result.probeSamples}`);
   assert.ok(result.probeRel < 1e-3, `probe rel L2 ${result.probeRel}`);
-  if (result.software) {
-    console.log(
-      "A7 UNKNOWN: software adapter (isFallbackAdapter or SwiftShader); not a real-hardware pass",
-    );
-    t.skip("UNKNOWN: software GPU adapter (isFallbackAdapter or SwiftShader)");
+  if (!result.hardware) {
+    const why = result.software ? "software adapter" : "masked or unrecognized renderer";
+    console.log(`A7 UNKNOWN: ${why}; not a hardware pass`);
+    t.skip(`UNKNOWN: ${why}`);
     return;
   }
   console.log(
-    `A7 PASS ${result.backend} relL2(500)=${at500.relL2.toExponential(3)} < 1e-3; probes recorded=${result.probeSamples}`,
+    `A7 PASS ${result.backend} hardware relL2(500)=${at500.relL2.toExponential(3)} < 1e-3; probes recorded=${result.probeSamples}`,
   );
 });
 
@@ -482,16 +529,193 @@ test("A7 forced WebGL2 on SwiftShader is software UNKNOWN", async (t) => {
     assert.fail(result.error);
   }
   const adapter = result.adapter || {};
-  const text = [adapter.vendor, adapter.architecture, adapter.device, adapter.description].join(" ");
-  console.log(`A7 webgl2 adapter ${JSON.stringify(adapter)} software=${result.software === true}`);
+  console.log(`A7 webgl2 adapter ${JSON.stringify(adapter)} hardware=${result.hardware === true} software=${result.software === true}`);
   assert.equal(result.backend, "webgl2");
-  if (/swiftshader/i.test(text) || adapter.isFallbackAdapter === true) {
-    assert.equal(result.software, true, "SwiftShader must be reported as software");
-    console.log("A7 WebGL2 UNKNOWN: software=true (ANGLE SwiftShader); not a real-hardware pass");
-    t.skip("UNKNOWN: WebGL2 SwiftShader software adapter");
-    return;
-  }
+  if (result.fallbackReason) console.log(`GPU auto-fallback: ${result.fallbackReason}`);
   const at500 = result.rows.find((row) => row.n === 500);
   assert.ok(at500 && at500.relL2 < 1e-3, `rel L2 ${at500 && at500.relL2}`);
+  assert.ok(result.probeSamples === 2000, `probe samples ${result.probeSamples}`);
+  assert.ok(result.probeRel < 1e-3, `probe rel L2 ${result.probeRel}`);
+  if (result.hardware !== true) {
+    const why = result.software ? "software=true (ANGLE SwiftShader)" : "masked or unrecognized renderer";
+    console.log(`A7 WebGL2 UNKNOWN: ${why}; not a hardware pass`);
+    t.skip(`UNKNOWN: WebGL2 ${why}`);
+    return;
+  }
   console.log(`A7 PASS webgl2 hardware relL2(500)=${at500.relL2.toExponential(3)}`);
+});
+
+test("masked WebGL renderer is UNKNOWN, not hardware", () => {
+  const VENDOR = 0x1f00;
+  const RENDERER = 0x1f01;
+  const gl = {
+    VENDOR,
+    RENDERER,
+    getExtension() {
+      return null;
+    },
+    getParameter(name) {
+      if (name === VENDOR) return "WebKit";
+      if (name === RENDERER) return "WebKit WebGL";
+      return "";
+    },
+  };
+  const info = classifyWebGLRenderer(gl);
+  assert.equal(info.unmasked, false);
+  assert.equal(info.hardware, false);
+  assert.equal(info.software, false);
+  assert.equal(info.description, "WebKit WebGL");
+  console.log("A7 WebGL2 UNKNOWN: masked renderer WebKit WebGL; not a hardware pass");
+});
+
+const VIEW = `<!doctype html>
+<meta charset="utf-8">
+<script>
+window.addEventListener("error", (event) => {
+  if (window.__RESULT) return;
+  window.__RESULT = { absent: false, error: String(event.message || event.error) };
+});
+window.addEventListener("unhandledrejection", (event) => {
+  if (window.__RESULT) return;
+  const reason = event.reason;
+  window.__RESULT = { absent: false, error: String(reason && reason.stack ? reason.stack : reason) };
+});
+</script>
+<script type="module">
+import { C0, createGrid, setMaterial, addSource, addProbe, step } from "/src/fdtd.js";
+import { fieldToImage } from "/src/gpu/color.js";
+import { createGpuStepper, createGpuView } from "/src/gpu/index.js";
+
+function metrics(ref, other) {
+  let num = 0, den = 0;
+  for (let i = 0; i < ref.length; i++) {
+    const d = other[i] - ref[i];
+    num += d * d;
+    den += ref[i] * ref[i];
+  }
+  return Math.sqrt(num / Math.max(den, 1e-300));
+}
+
+function make() {
+  const g = createGrid({ nx: 40, ny: 32, dx: 1, dy: 1, pml: 6 });
+  addSource(g, { i: 12, j: 16, kind: "sine", f0: C0 / 12, amp: 1 });
+  addProbe(g, { i: 20, j: 16 });
+  return g;
+}
+
+try {
+  const backend = new URLSearchParams(location.search).get("backend") || "auto";
+  const preview = make();
+  step(preview, 32);
+  let peak = 0;
+  for (let i = 0; i < preview.field.length; i++) peak = Math.max(peak, Math.abs(preview.field[i]));
+  const live = make();
+  const cpu = make();
+  const canvas = document.createElement("canvas");
+  const view = await createGpuView(canvas, live, { backend: backend, stepsPerFrame: 4, scale: peak });
+  for (let i = 0; i < 8; i++) view.frame();
+  await view.idle();
+  step(cpu, 32);
+  const drawn = await view.readDrawn();
+  const expected = fieldToImage(cpu.field, cpu.nx, cpu.ny, peak);
+  let maxDelta = 0;
+  for (let i = 0; i < drawn.length; i++) maxDelta = Math.max(maxDelta, Math.abs(drawn[i] - expected[i]));
+  const probes = view.readProbes();
+  const stream = view.probeStream;
+  const edited = make();
+  const reference = make();
+  const stepper = await createGpuStepper(edited, { backend: backend });
+  const before = stepper.materialBytesUploaded;
+  setMaterial(edited, { x0: 8, y0: 8, x1: 10, y1: 9, pec: 1 });
+  setMaterial(reference, { x0: 8, y0: 8, x1: 10, y1: 9, pec: 1 });
+  const changed = stepper.syncMaterials(edited);
+  const uploaded = stepper.materialBytesUploaded - before;
+  await stepper.step(24);
+  step(reference, 24);
+  const relL2 = metrics(reference.field, await stepper.readField());
+  stepper.destroy();
+  const adapter = view.adapter || {};
+  const text = [adapter.vendor, adapter.architecture, adapter.device, adapter.description].join(" ");
+  const software = !!(adapter && (adapter.software || adapter.isFallbackAdapter || /swiftshader|llvmpipe|softpipe|lavapipe|software/i.test(text)));
+  const hardware = !!(adapter && adapter.hardware === true && !software);
+  window.__RESULT = {
+    absent: false,
+    software: software,
+    hardware: hardware,
+    backend: view.backend,
+    adapter: adapter,
+    maxDelta: maxDelta,
+    fullFieldReads: view.fullFieldReads,
+    probeSamples: probes[0] ? probes[0].samples.length : 0,
+    stream: stream ? {
+      stride: stream.stride,
+      capacity: stream.capacity,
+      probeCount: stream.probeCount,
+      format: stream.format,
+      headByteOffset: stream.headByteOffset,
+      hasBuffer: !!stream.buffer,
+    } : null,
+    changed: changed,
+    uploaded: uploaded,
+    relL2: relL2,
+    cells: edited.nx * edited.ny,
+  };
+} catch (err) {
+  const message = String(err && err.stack ? err.stack : err);
+  window.__RESULT = { absent: /UNKNOWN: no GPU backend/.test(message), error: message };
+}
+</script>
+`;
+
+test("drawn field matches the CPU image", async (t) => {
+  const chrome = findChrome();
+  if (!chrome) {
+    console.log("UNKNOWN: no GPU backend");
+    t.skip("UNKNOWN: no GPU backend");
+    return;
+  }
+  const server = await serve();
+  const { port } = server.address();
+  let result;
+  try {
+    result = await chromeResult(chrome, `http://127.0.0.1:${port}/view.html`);
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
+  if (!result) assert.fail("GPU view harness returned no result");
+  if (result.error && result.maxDelta == null) {
+    if (result.absent) {
+      console.log("UNKNOWN: no GPU backend");
+      console.log(result.error);
+      t.skip("UNKNOWN: no GPU backend");
+      return;
+    }
+    assert.fail(result.error);
+  }
+  const adapter = result.adapter || {};
+  console.log(
+    `view ${result.backend} adapter ${JSON.stringify(adapter)} maxDelta=${result.maxDelta} relL2=${result.relL2} uploaded=${result.uploaded} changed=${result.changed} reads=${result.fullFieldReads}`,
+  );
+  assert.equal(result.fullFieldReads, 0);
+  assert.equal(result.probeSamples, 32);
+  assert.ok(result.changed > 0 && result.changed < result.cells);
+  assert.ok(result.uploaded > 0 && result.uploaded < result.cells * 12);
+  const bytesPerCell = result.backend === "webgl2" ? 12 : 16;
+  assert.equal(result.uploaded, result.changed * bytesPerCell);
+  if (result.backend === "webgpu") {
+    assert.equal(result.stream.capacity, 4096);
+    assert.equal(result.stream.stride, 1);
+    assert.equal(result.stream.format, "f32");
+    assert.equal(result.stream.headByteOffset, 8);
+    assert.equal(result.stream.hasBuffer, true);
+  }
+  assert.ok(result.maxDelta <= 1, `drawn field max channel delta ${result.maxDelta}`);
+  assert.ok(result.relL2 < 1e-3, `patched rel L2 ${result.relL2}`);
+  if (result.hardware !== true) {
+    const why = result.software ? "software adapter" : "masked or unrecognized renderer";
+    console.log(`drawn field UNKNOWN: ${why}; numbers are not a hardware pass`);
+    t.skip(`UNKNOWN: ${why}`);
+    return;
+  }
+  console.log(`drawn field PASS ${result.backend} hardware maxDelta=${result.maxDelta}`);
 });
