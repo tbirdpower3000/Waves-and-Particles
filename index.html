@@ -14,98 +14,109 @@
     <svg class="mark" viewBox="0 0 16 16" aria-hidden="true">
       <path d="M1 8c1.5-3 2.5-3 4 0s2.5 3 4 0 2.5-3 4 0" fill="none" stroke="currentColor" stroke-width="1.4"></path>
     </svg>
-    <h1>Waves &amp; Particles</h1>
-    <p class="subtitle">2D FDTD lab</p>
-    <p id="param-notes" role="status"></p>
+    <h1 title="App title. A browser lab for simulating radio waves and the digital signals they carry.">Waves &amp; Particles</h1>
+    <p class="subtitle" title="FDTD (finite-difference time-domain) solves Maxwell's equations step by step on a flat grid of cells.">2D wave + radio link lab</p>
+    <p id="param-notes" role="status" aria-label="URL settings notes" title="Lists any settings from the page address that were out of range and ignored, so defaults were used instead."></p>
   </header>
   <main>
     <section id="panel-field" class="panel" aria-labelledby="field-title">
       <div class="panel-head">
-        <h2 id="field-title">Field</h2>
-        <span class="kicker">01</span>
-        <span id="backend-label" class="backend" data-backend="cpu">cpu</span>
+        <h2 id="field-title" title="Live map of the simulated electric field across the 2D grid.">Wave field</h2>
+        <span class="kicker" title="Panel number. The field panel feeds the channel panel, which feeds the signal panel.">Panel 1</span>
+        <span id="backend-label" class="backend" data-backend="cpu" aria-label="Compute engine" title="Shows whether the simulation runs on the processor (cpu) or the graphics card (webgpu/webgl2). The results are the same.">cpu</span>
       </div>
+      <p class="glance">What am I looking at? A top-down view of a radio wave spreading across a 2D grid. You draw metal and glass-like blocks and watch the wave reflect, slow down and bend.</p>
       <div class="toolbar" role="toolbar" aria-label="Field tools">
-        <button type="button" id="mode-tmz" data-mode="tmz" aria-pressed="true">TMz</button>
-        <button type="button" id="mode-scalar" data-mode="scalar" aria-pressed="false">Scalar</button>
-        <button type="button" id="tool-metal" data-tool="metal" aria-pressed="true" aria-label="Draw metal wall">Metal</button>
-        <button type="button" id="tool-dielectric" data-tool="dielectric" aria-pressed="false" aria-label="Draw dielectric rectangle">Dielectric</button>
-        <label class="eps">εr <input id="eps-r" type="number" min="1" max="80" step="0.1" value="4"></label>
-        <button type="button" id="tool-tx" data-tool="tx" aria-pressed="false" aria-label="Place transmitter">TX</button>
-        <button type="button" id="tool-rx" data-tool="rx" aria-pressed="false" aria-label="Place receiver probe">RX</button>
-        <label class="freq">cells/λ <input id="freq" type="number" min="8" max="64" step="1" value="24"></label>
-        <label class="preset">preset
-          <select id="preset">
-            <option value="free">Free space</option>
-            <option value="pec">PEC wall</option>
-            <option value="slab">εr=4 slab</option>
-            <option value="custom">Custom</option>
+        <button type="button" id="mode-tmz" data-mode="tmz" aria-pressed="true" title="Full electromagnetic model: the vertical electric field Ez with in-plane magnetic fields Hx and Hy, in SI units.">Electromagnetic mode</button>
+        <button type="button" id="mode-scalar" data-mode="scalar" aria-pressed="false" title="A generic single-quantity wave equation with the same speed and the same εr slowing. It's not a full electromagnetic field.">Simple wave mode</button>
+        <button type="button" id="tool-metal" data-tool="metal" aria-pressed="true" aria-label="Draw metal" title="Drag a rectangle of perfect electric conductor (PEC). Waves reflect completely and the field inside is zero.">Draw metal</button>
+        <button type="button" id="tool-dielectric" data-tool="dielectric" aria-pressed="false" aria-label="Draw insulator block" title="Drag a rectangle of non-conducting material such as glass or plastic, using the εr value set beside it.">Draw insulator block</button>
+        <label class="eps" title="Relative permittivity (unitless, 1–80). Waves travel √εr times slower inside. Water is about 80. Applies to the next block you draw.">Material slow-down factor <input id="eps-r" type="number" min="1" max="80" step="0.1" value="4" title="Relative permittivity (unitless, 1–80). Waves travel √εr times slower inside. Water is about 80. Applies to the next block you draw."></label>
+        <button type="button" id="tool-tx" data-tool="tx" aria-pressed="false" aria-label="Place transmitter" title="Click a cell to place the wave source, which is a continuous sine wave at the chosen frequency.">Place transmitter</button>
+        <button type="button" id="tool-rx" data-tool="rx" aria-pressed="false" aria-label="Place receiver probe" title="Click a cell to place a probe that records the field over time. Up to 4 probes.">Place receiver probe</button>
+        <label class="freq" title="Grid cells across one wavelength (8–64). More cells means a lower frequency and better accuracy. 24 cells is about 12.5 MHz.">Cells per wavelength <input id="freq" type="number" min="8" max="64" step="1" value="24" title="Grid cells across one wavelength (8–64). More cells means a lower frequency and better accuracy. 24 cells is about 12.5 MHz."></label>
+        <label class="preset" title="Loads a ready-made layout with a transmitter, a probe and an optional obstacle.">Starting scene
+          <select id="preset" title="Loads a ready-made layout with a transmitter, a probe and an optional obstacle.">
+            <option value="free" title="No obstacles. The wave spreads outward and is absorbed at the edges.">Empty space</option>
+            <option value="pec" title="Adds a perfectly conducting wall that reflects the wave back toward the source.">Metal wall</option>
+            <option value="slab" title="Adds a slab with εr = 4. Waves travel at half speed inside and partly reflect at each face.">Glass-like slab</option>
+            <option value="custom" title="Selected automatically once you draw or place anything yourself.">Your own layout</option>
           </select>
         </label>
-        <button type="button" id="play" disabled>Play</button>
-        <button type="button" id="pause" disabled>Pause</button>
-        <button type="button" id="reset">Reset</button>
-        <button type="button" id="clear-geometry">Clear</button>
-        <button type="button" id="use-gpu" aria-pressed="false" disabled>GPU</button>
+        <button type="button" id="play" disabled title="Starts stepping the simulation forward in time. The spacebar also toggles run and pause.">Run</button>
+        <button type="button" id="pause" disabled title="Freezes the simulation at the current time step.">Pause</button>
+        <button type="button" id="reset" title="Clears the waves back to time zero and keeps your drawn objects.">Restart time</button>
+        <button type="button" id="clear-geometry" title="Deletes all metal, blocks, the transmitter and the probes, then restarts.">Remove everything</button>
+        <button type="button" id="use-gpu" aria-pressed="false" disabled title="Runs the same simulation on the graphics card for speed. It's only enabled when your browser supports it.">Use graphics card</button>
       </div>
-      <p id="field-state" class="banner" data-state="checking" role="status">Checking modules…</p>
+      <p id="field-state" class="banner" data-state="checking" role="status" aria-label="Simulator status" title="Shows whether the wave solver loaded and which engine it's using.">Checking modules…</p>
       <div class="stage">
-        <canvas id="field-canvas" width="640" height="480" aria-label="Live field"></canvas>
+        <canvas id="field-canvas" width="640" height="480" aria-label="Field strength map" title="Each pixel is one cell. Teal means positive field, orange-red means negative, and dark means near zero. The scale is relative to the strongest field."></canvas>
       </div>
-      <p id="field-readout" class="readout"></p>
+      <div class="readout-wrap">
+        <p id="field-readout" class="readout" aria-label="Last action" title="The most recent event, such as running, paused, grid rebuilt or an input error."></p>
+        <p class="field-key">
+          <span title="Cells outside this line are a perfectly matched layer (CPML) that soaks up outgoing waves to imitate open space.">Absorbing edge boundary</span>
+          <span title="Location of the wave source.">Transmitter</span>
+          <span title="Probe locations. The colour matches each probe's trace in the Channel panel.">Receiver probes 1–4</span>
+          <span title="Grey is perfect conductor and teal is dielectric. A dashed outline shows the rectangle while you drag.">Metal / insulator blocks</span>
+        </p>
+      </div>
     </section>
     <section id="panel-channel" class="panel" aria-labelledby="channel-title">
       <div class="panel-head">
-        <h2 id="channel-title">Channel</h2>
-        <span class="kicker">02</span>
+        <h2 id="channel-title" title="What each receiver probe picked up. This becomes the &quot;channel&quot; that the Signal panel transmits through.">Radio channel</h2>
+        <span class="kicker" title="Panel number.">Panel 2</span>
       </div>
-      <p id="channel-state" class="banner" data-state="checking" role="status">Checking modules…</p>
+      <p class="glance">What am I looking at? What each receiver probe "heard" over time. Echoes off walls show up as extra bumps after the first arrival.</p>
+      <p id="channel-state" class="banner" data-state="checking" role="status" aria-label="Channel status" title="Shows whether the wave solver is available to record probe signals.">Checking modules…</p>
       <div class="toolbar">
-        <button type="button" id="record-ir" disabled>Record impulse</button>
-        <p id="channel-note" class="note"></p>
+        <button type="button" id="record-ir" disabled title="Restarts the field with one short pulse from the transmitter and saves what each probe receives as the channel.">Record pulse response</button>
+        <p id="channel-note" class="note" aria-label="Recording status" title="Progress or result, for example &quot;recording 120/1024&quot;, &quot;frozen pulse response, 2 probes&quot; or &quot;place a transmitter first&quot;."></p>
       </div>
       <div class="probe-stack">
-        <div class="probe"><div id="channel-label-0" class="probe-label">Probe 1</div><div class="probe-plot"><canvas id="channel-plot-0" aria-label="Probe 1 impulse response"></canvas></div></div>
-        <div class="probe"><div id="channel-label-1" class="probe-label">Probe 2</div><div class="probe-plot"><canvas id="channel-plot-1" aria-label="Probe 2 impulse response"></canvas></div></div>
-        <div class="probe"><div id="channel-label-2" class="probe-label">Probe 3</div><div class="probe-plot"><canvas id="channel-plot-2" aria-label="Probe 3 impulse response"></canvas></div></div>
-        <div class="probe"><div id="channel-label-3" class="probe-label">Probe 4</div><div class="probe-plot"><canvas id="channel-plot-3" aria-label="Probe 4 impulse response"></canvas></div></div>
+        <div class="probe"><div id="channel-label-0" class="probe-label" title="The field at probe 1 over time. &quot;Live&quot; updates while running. &quot;Frozen N&quot; is a saved recording of N samples.">Probe 1 trace</div><div class="probe-plot"><canvas id="channel-plot-0" aria-label="Probe 1 pulse response" title="The field at that probe over time. The first bump is the direct wave and later bumps are echoes."></canvas></div></div>
+        <div class="probe"><div id="channel-label-1" class="probe-label" title="Same as probe 1, for the second probe you placed.">Probe 2 trace</div><div class="probe-plot"><canvas id="channel-plot-1" aria-label="Probe 2 pulse response" title="The field at that probe over time. The first bump is the direct wave and later bumps are echoes."></canvas></div></div>
+        <div class="probe"><div id="channel-label-2" class="probe-label" title="Same as probe 1, for the third probe you placed.">Probe 3 trace</div><div class="probe-plot"><canvas id="channel-plot-2" aria-label="Probe 3 pulse response" title="The field at that probe over time. The first bump is the direct wave and later bumps are echoes."></canvas></div></div>
+        <div class="probe"><div id="channel-label-3" class="probe-label" title="Same as probe 1, for the fourth probe you placed.">Probe 4 trace</div><div class="probe-plot"><canvas id="channel-plot-3" aria-label="Probe 4 pulse response" title="The field at that probe over time. The first bump is the direct wave and later bumps are echoes."></canvas></div></div>
       </div>
     </section>
     <section id="panel-signal" class="panel" aria-labelledby="signal-title">
       <div class="panel-head">
-        <h2 id="signal-title">Signal</h2>
-        <span class="kicker">03</span>
+        <h2 id="signal-title" title="Sends random bits through the chosen channel with noise, then measures how many arrive wrong.">Digital link test</h2>
+        <span class="kicker" title="Panel number.">Panel 3</span>
       </div>
-      <p id="signal-state" class="banner" data-state="checking" role="status">Checking modules…</p>
+      <p class="glance">What am I looking at? Digital data is sent through that channel with added noise. The plots show how cleanly the receiver recovers the bits, compared with textbook theory.</p>
+      <p id="signal-state" class="banner" data-state="checking" role="status" aria-label="Link status" title="Shows whether the signal modules loaded. &quot;Main tap&quot; is the strongest echo the receiver locks onto.">Checking modules…</p>
       <div class="controls" id="signal-controls">
-        <label class="scheme">Scheme
-          <select id="scheme">
-            <option value="bpsk">BPSK</option>
-            <option value="qpsk">QPSK</option>
-            <option value="chirp">Chirp</option>
+        <label class="scheme" title="How bits become a waveform: BPSK or QPSK for data, or a chirp test tone.">Signal type
+          <select id="scheme" title="How bits become a waveform: BPSK or QPSK for data, or a chirp test tone.">
+            <option value="bpsk" title="Binary phase-shift keying: each symbol is +1 or −1, so it carries one bit.">1 bit per symbol</option>
+            <option value="qpsk" title="Quadrature phase-shift keying: four phases carry two bits per symbol. With Gray coding the bit error rate matches BPSK.">2 bits per symbol</option>
+            <option value="chirp" title="A tone sweeping from 200 to 3000 Hz over 40 ms. It's a test signal that carries no bits, so no BER.">Frequency sweep tone</option>
           </select>
         </label>
-        <label class="channel">Channel
-          <select id="channel-source">
-            <option value="identity">Identity</option>
+        <label class="channel" title="What the signal passes through before noise is added: a perfect path or a recorded probe response.">Propagation path
+          <select id="channel-source" title="What the signal passes through before noise is added: a perfect path or a recorded probe response.">
+            <option value="identity" title="No echoes or loss. The signal arrives unchanged before noise is added.">Perfect direct path</option>
           </select>
         </label>
-        <label class="seed">Seed
-          <input id="seed" type="number" value="20261121" step="1">
+        <label class="seed" title="Starting number for the random bits and noise. The same seed gives the same result every run.">Random seed
+          <input id="seed" type="number" value="20261121" step="1" title="Starting number for the random bits and noise. The same seed gives the same result every run.">
         </label>
-        <label class="wide" for="ebn0">Eb/N0 <output id="ebn0-out" for="ebn0">6.0</output> dB</label>
-        <input id="ebn0" type="range" min="-2" max="12" step="0.5" value="6">
+        <label class="wide" id="ebn0-caption" for="ebn0" title="Received energy per bit divided by noise power density. Higher means cleaner. Each +3 dB doubles the ratio."><span id="ebn0-label">Signal-to-noise per bit</span> <output id="ebn0-out" for="ebn0" aria-label="Current Eb/N0" title="The slider's value.">6.0</output> <span id="ebn0-unit">dB</span></label>
+        <input id="ebn0" type="range" min="-2" max="12" step="0.5" value="6" title="Received energy per bit divided by noise power density. Higher means cleaner. Each +3 dB doubles the ratio.">
         <div class="row">
-          <button type="button" id="run-link">Run link</button>
-          <button type="button" id="sweep-ber">Sweep BER</button>
-          <span id="ber-readout">BER —</span>
+          <button type="button" id="run-link" title="Sends 8192 random bits at the current Eb/N0 and measures the bit error rate.">Send once</button>
+          <button type="button" id="sweep-ber" title="Repeats the test at 0, 2, 4, 6, 8 and 10 dB and plots each measured error rate.">Test noise levels</button>
+          <span id="ber-readout" title="Fraction of bits received wrong. &quot;&lt; 1/N&quot; means zero errors in N bits.">Bit error rate —</span>
         </div>
-        <p id="signal-note" class="note" role="status"></p>
+        <p id="signal-note" class="note" role="status" aria-label="Run details" title="Settings and results of the last run. &quot;pRef&quot; is the received signal power used to set the noise level."></p>
       </div>
       <div class="plots">
-        <div class="plot"><div class="plot-label">Constellation</div><div class="plot-canvas"><canvas id="constellation" aria-label="Constellation"></canvas></div></div>
-        <div class="plot"><div class="plot-label">BER vs Eb/N0</div><div class="plot-canvas"><canvas id="ber-plot" aria-label="BER versus Eb/N0"></canvas></div></div>
-        <div class="plot"><div class="plot-label">Spectrum</div><div class="plot-canvas"><canvas id="spectrum" aria-label="Spectrum"></canvas></div></div>
+        <div class="plot"><div class="plot-label" title="Each dot is one received symbol. Tight clusters mean a clean signal and smeared clusters mean noise or echoes.">Received symbol map</div><div class="plot-canvas"><canvas id="constellation" aria-label="Received symbol map" title="Each dot is one received symbol. Tight clusters mean a clean signal and smeared clusters mean noise or echoes."></canvas></div></div>
+        <div class="plot"><div class="plot-label" title="The teal line is textbook AWGN theory. Orange dots are measured runs. The amber line marks the current slider setting.">Errors vs noise level</div><div class="plot-canvas"><canvas id="ber-plot" aria-label="Errors versus noise level" title="The teal line is textbook AWGN theory. Orange dots are measured runs. The amber line marks the current slider setting."></canvas></div></div>
+        <div class="plot"><div class="plot-label" title="How the received signal's power is spread across frequency, relative to its strongest frequency.">Frequency content</div><div class="plot-canvas"><canvas id="spectrum" aria-label="Frequency content" title="How the received signal's power is spread across frequency, relative to its strongest frequency."></canvas></div></div>
       </div>
     </section>
   </main>

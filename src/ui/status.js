@@ -3,6 +3,9 @@ export const COMING_SOON_TEXT = 'coming soon';
 
 export function setReadyState(el, state, detail, label) {
   if (!el) return;
+  if (!el.dataset.glossaryTitle && el.getAttribute('title')) {
+    el.dataset.glossaryTitle = el.getAttribute('title');
+  }
   el.dataset.state = state;
   const text = label || (state === 'ready' ? 'ready' : state === 'error' ? 'module error' : NOT_READY_TEXT);
   el.replaceChildren();
@@ -14,7 +17,7 @@ export function setReadyState(el, state, detail, label) {
     span.textContent = ` — ${detail}`;
     el.append(span);
   }
-  el.title = el.textContent;
+  el.title = el.dataset.glossaryTitle || el.textContent;
 }
 
 export function renderParamNotes(el, notes) {

@@ -29,7 +29,7 @@ export function mountChannel(doc, bus) {
       const label = must(`channel-label-${index}`);
       const count = row?.samples?.length ?? 0;
       const kind = frozen.length ? 'frozen' : 'live';
-      label.textContent = row ? `Probe ${index + 1} · ${kind} ${count}` : `Probe ${index + 1}`;
+      label.textContent = row ? `Probe ${index + 1} trace · ${kind} ${count}` : `Probe ${index + 1} trace`;
       label.style.color = PROBE_COLORS[index];
       drawSeries(canvas, row?.samples ?? [], {
         color: PROBE_COLORS[index],
@@ -47,7 +47,7 @@ export function mountChannel(doc, bus) {
   bus.on('impulse', (payload) => {
     frozen = payload?.probes ?? [];
     note.textContent = frozen.length
-      ? `frozen impulse, ${frozen.length} probe${frozen.length === 1 ? '' : 's'}`
+      ? `frozen pulse response, ${frozen.length} probe${frozen.length === 1 ? '' : 's'}`
       : '';
     draw();
   });
