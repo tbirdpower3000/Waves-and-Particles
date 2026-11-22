@@ -1,6 +1,22 @@
 import { chirp as cpuChirp } from '../signal.js';
 import { awgnWgsl, berWgsl, fftWgsl, firWgsl, modemWgsl } from './shaders.js';
 
+// Default WebGPU limits: 65535 workgroups per dimension, 64 threads, 128 MiB storage.
+const MAX_ELEMENTS = 65535 * 64;
+const MAX_BYTES = 128 * 1024 * 1024;
+
+function guardElements(count, label) {
+  if (count > MAX_ELEMENTS) {
+    throw new Error(`${label} has ${count} elements, above the limit of ${MAX_ELEMENTS}`);
+  }
+}
+
+function guardBytes(bytes, label) {
+    if (bytes > MAX_BYTES) {
+      throw new Error(`${label} is ${bytes} bytes, above the 128 MiB storage limit`);
+    }
+}
+
 /**
  * WebGPU signal chain. Samples are computed in f32 and returned in Float64Array
  * so callers can pass them onward. Stochastic streams are a counter hash plus
@@ -18,11 +34,24 @@ export async function createGpuSignal(device) {
     throw new Error('createGpuSignal requires a GPUDevice');
   }
 
+  const live = new Set();
+  const track = (buffer) => {
+    live.add(buffer);
+    return buffer;
+  };
+  function drop(...buffers) {
+    for (const buffer of buffers) {
+      buffer.destroy();
+      live.delete(buffer);
+    }
+  }
+
   const ber = await pipeline(device, berWgsl, 'ber_main');
   const fir = await pipeline(device, firWgsl, 'fir_main');
   const fftRev = await pipeline(device, fftWgsl, 'fft_reverse');
-  const fftStage = await pipeline(device, fftWgsl, 'fft_stage');
+  const fftIter = await pipeline(device, fftWgsl, 'fft_iter');
   const fftMagPipe = await pipeline(device, fftWgsl, 'fft_mag');
+  const powerPipe = await pipeline(device, berWgsl, 'power_main');
   const awgnPipe = await pipeline(device, awgnWgsl, 'awgn_main');
   const bitsPipe = await pipeline(device, modemWgsl, 'bits_main');
   const modPipe = await pipeline(device, modemWgsl, 'mod_main');
@@ -32,28 +61,31 @@ export async function createGpuSignal(device) {
     const src = data instanceof Float32Array || data instanceof Uint32Array
       ? data
       : new Float32Array(data);
+    guardElements(src.length, 'buffer');
+    guardBytes(src.byteLength, 'buffer');
     const size = align16(Math.max(16, src.byteLength));
-    const buffer = device.createBuffer({
+    const buffer = track(device.createBuffer({
       size,
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | usageExtra,
-    });
+    }));
     device.queue.writeBuffer(buffer, 0, src);
     return buffer;
   }
 
   function emptyStorage(byteLength, usageExtra = 0) {
-    return device.createBuffer({
+    guardBytes(byteLength, 'buffer');
+    return track(device.createBuffer({
       size: align16(Math.max(16, byteLength)),
       usage: GPUBufferUsage.STORAGE | GPUBufferUsage.COPY_DST | GPUBufferUsage.COPY_SRC | usageExtra,
-    });
+    }));
   }
 
   function uniform(bytes) {
     const size = align16(bytes.byteLength);
-    const buffer = device.createBuffer({
+    const buffer = track(device.createBuffer({
       size,
       usage: GPUBufferUsage.UNIFORM | GPUBufferUsage.COPY_DST,
-    });
+    }));
     device.queue.writeBuffer(buffer, 0, bytes);
     return buffer;
   }
@@ -102,6 +134,37 @@ export async function createGpuSignal(device) {
     return Math.max(1, Math.ceil(n / 64));
   }
 
+  async function regionPower(symbols, sps, h, offset, seed, scheme, nTx) {
+    const groups = groupsOf(symbols);
+    const params = uniform(berParams({
+      nSymbols: symbols,
+      sps,
+      nTaps: h.length,
+      offset,
+      nTx,
+      seed,
+      scheme,
+      sigma: 0,
+    }));
+    const taps = storage(f32(h));
+    const partial = emptyStorage(groups * 4);
+    const group = device.createBindGroup({
+      layout: powerPipe.getBindGroupLayout(0),
+      entries: [
+        { binding: 0, resource: { buffer: params } },
+        { binding: 1, resource: { buffer: taps } },
+        { binding: 3, resource: { buffer: partial } },
+      ],
+    });
+    dispatch(powerPipe, group, groups);
+    const parts = await readF32(partial, groups);
+    drop(params, taps, partial);
+    let sum = 0;
+    for (let i = 0; i < groups; i++) sum += parts[i];
+    const samples = symbols * sps;
+    return samples === 0 ? 0 : sum / samples;
+  }
+
   return {
     /**
      * Counter-stream bits, 0 or 1. `seed` is a uint32. An RNG object is
@@ -109,6 +172,8 @@ export async function createGpuSignal(device) {
      */
     async bitsRandom(n, seedOrRng) {
       requireCount(n, 'n');
+      guardElements(n, 'bitsRandom');
+      guardBytes(n * 4, 'bitsRandom');
       if (n === 0) return new Uint8Array(0);
       const params = uniform(modemParams({ nBits: n, seed: asSeed(seedOrRng) }));
       const out = emptyStorage(n * 4);
@@ -121,7 +186,7 @@ export async function createGpuSignal(device) {
       });
       dispatch(bitsPipe, group, groupsOf(n));
       const words = await readU32(out, n);
-      destroyAll(params, out);
+      drop(params, out);
       const bits = new Uint8Array(n);
       for (let i = 0; i < n; i++) bits[i] = words[i] & 1;
       return bits;
@@ -132,6 +197,9 @@ export async function createGpuSignal(device) {
       requireSps(sps);
       const nSymbols = Math.floor(bits.length / k);
       const nSamples = nSymbols * sps;
+      guardElements(bits.length, 'modulate bits');
+      guardElements(nSamples, 'modulate samples');
+      guardBytes(nSamples * 4, 'modulate');
       if (nSamples === 0) return { i: new Float64Array(0), q: new Float64Array(0) };
       const packed = new Uint32Array(nSymbols * k);
       for (let i = 0; i < packed.length; i++) packed[i] = bits[i] ? 1 : 0;
@@ -150,7 +218,7 @@ export async function createGpuSignal(device) {
       });
       dispatch(modPipe, group, groupsOf(nSamples));
       const [i, q] = await Promise.all([readF32(outI, nSamples), readF32(outQ, nSamples)]);
-      destroyAll(params, bitBuf, outI, outQ);
+      drop(params, bitBuf, outI, outQ);
       return { i, q };
     },
 
@@ -158,6 +226,8 @@ export async function createGpuSignal(device) {
       const k = schemeBits(scheme);
       requireSps(sps);
       const n = pairLength(sig);
+      guardElements(n, 'demodulate');
+      guardBytes(n * 4, 'demodulate');
       requireOffset(offset, n);
       const room = Math.floor((n - offset) / sps);
       const nSym = nSymbols === undefined ? room : nSymbols;
@@ -189,7 +259,7 @@ export async function createGpuSignal(device) {
       });
       dispatch(demodPipe, group, groupsOf(nSym));
       const words = await readU32(out, nBits);
-      destroyAll(params, inI, inQ, out);
+      drop(params, inI, inQ, out);
       const bits = new Uint8Array(nBits);
       for (let i = 0; i < nBits; i++) bits[i] = words[i] & 1;
       return bits;
@@ -197,6 +267,8 @@ export async function createGpuSignal(device) {
 
     async awgn(sig, opts) {
       const n = pairLength(sig);
+      guardElements(n, 'awgn');
+      guardBytes(n * 4, 'awgn');
       requireSps(opts.sps);
       requireFinite(opts.ebn0dB, 'ebn0dB');
       requirePositive(opts.bitsPerSymbol, 'bitsPerSymbol');
@@ -220,7 +292,7 @@ export async function createGpuSignal(device) {
       });
       dispatch(awgnPipe, group, groupsOf(n));
       const [i, q] = await Promise.all([readF32(outI, n), readF32(outQ, n)]);
-      destroyAll(params, inI, inQ, outI, outQ);
+      drop(params, inI, inQ, outI, outQ);
       return { i, q };
     },
 
@@ -228,6 +300,8 @@ export async function createGpuSignal(device) {
       const n = pairLength(sig);
       if (!h || h.length === 0 || n === 0) return { i: new Float64Array(0), q: new Float64Array(0) };
       const outLen = n + h.length - 1;
+      guardElements(outLen, 'convolveChannel');
+      guardBytes(outLen * 4, 'convolveChannel');
       const params = uniform(firParams(n, h.length, outLen));
       const taps = storage(f32(h));
       const inI = storage(f32(sig.i));
@@ -247,7 +321,7 @@ export async function createGpuSignal(device) {
       });
       dispatch(fir, group, groupsOf(outLen));
       const [i, q] = await Promise.all([readF32(outI, outLen), readF32(outQ, outLen)]);
-      destroyAll(params, taps, inI, inQ, outI, outQ);
+      drop(params, taps, inI, inQ, outI, outQ);
       return { i, q };
     },
 
@@ -260,7 +334,8 @@ export async function createGpuSignal(device) {
       const n0 = pairLength(sig);
       if (n0 === 0) return new Float64Array(0);
       const n = nextPow2(n0);
-      if (n > 2 ** 20) throw new Error('fft length exceeds 2^20');
+      guardElements(n, 'fftMag');
+      guardBytes(n * 4, 'fftMag');
       const re = new Float32Array(n);
       const im = new Float32Array(n);
       for (let i = 0; i < sig.i.length; i++) {
@@ -270,9 +345,20 @@ export async function createGpuSignal(device) {
       const reBuf = storage(re, GPUBufferUsage.COPY_SRC);
       const imBuf = storage(im, GPUBufferUsage.COPY_SRC);
       const magBuf = emptyStorage(n * 4);
+      const twCount = Math.max(1, n >>> 1);
+      const twRe = new Float32Array(twCount);
+      const twIm = new Float32Array(twCount);
+      twRe[0] = 1;
+      for (let k = 1; k < twCount; k++) {
+        const ang = -2 * Math.PI * k / n;
+        twRe[k] = Math.cos(ang);
+        twIm[k] = Math.sin(ang);
+      }
+      const twReBuf = storage(twRe);
+      const twImBuf = storage(twIm);
       const bits = Math.round(Math.log2(n));
-      const owned = [reBuf, imBuf, magBuf];
-      const fftGroup = (pipe, len, withMag) => {
+      const owned = [reBuf, imBuf, magBuf, twReBuf, twImBuf];
+      const fftGroup = (pipe, len, withMag, withTwiddle) => {
         const params = uniform(fftParams(n, len, bits));
         owned.push(params);
         const list = [
@@ -281,21 +367,23 @@ export async function createGpuSignal(device) {
           { binding: 2, resource: { buffer: imBuf } },
         ];
         if (withMag) list.push({ binding: 3, resource: { buffer: magBuf } });
+        if (withTwiddle) {
+          list.push({ binding: 4, resource: { buffer: twReBuf } });
+          list.push({ binding: 5, resource: { buffer: twImBuf } });
+        }
         return device.createBindGroup({ layout: pipe.getBindGroupLayout(0), entries: list });
       };
-      dispatch(fftRev, fftGroup(fftRev, 2, false), groupsOf(n));
-      for (let len = 2; len <= n; len *= 2) {
-        dispatch(fftStage, fftGroup(fftStage, len, false), groupsOf(n / 2));
-      }
-      dispatch(fftMagPipe, fftGroup(fftMagPipe, n, true), groupsOf(n));
+      dispatch(fftRev, fftGroup(fftRev, 2, false, false), groupsOf(n));
+      dispatch(fftIter, fftGroup(fftIter, n, false, true), 1);
+      dispatch(fftMagPipe, fftGroup(fftMagPipe, n, true, false), groupsOf(n));
       const mag = await readF32(magBuf, n);
-      destroyAll(...owned);
+      drop(...owned);
       return mag;
     },
 
     /**
-     * Bit disagreements. Lengths must match. The count is reduced on the GPU.
-     * Small vectors still round-trip; prefer countErrors for a BER sweep.
+     * Bit disagreements. Lengths must match. Both arrays are already on the
+     * host, so the count is a host loop. The on-device reduction is countErrors.
      */
     async ber(txBits, rxBits) {
       if (txBits.length !== rxBits.length) {
@@ -304,7 +392,6 @@ export async function createGpuSignal(device) {
       const n = txBits.length;
       if (n === 0) return 0;
       let errors = 0;
-      // A one-buffer reduction of host bits. The sweep path is countErrors.
       for (let i = 0; i < n; i++) {
         if ((txBits[i] ? 1 : 0) !== (rxBits[i] ? 1 : 0)) errors++;
       }
@@ -315,7 +402,8 @@ export async function createGpuSignal(device) {
      * Full BPSK/QPSK trial on the device. Rectangular symbols, real FIR `h`,
      * per-sample Box–Muller noise, integrate-and-dump from `offset` for
      * `nSymbols` symbols. `pRef` is the signal-region power used as P̄.
-     * When `pRef` is omitted, unit rectangular power is used (1 BPSK, 2 QPSK).
+     * When `pRef` is omitted, P̄ is the mean power of the demodulated samples
+     * after the FIR, the same quantity the CPU measures on that buffer.
      * Returns the error count. The waveform is not read back.
      */
     async countErrors({
@@ -330,19 +418,35 @@ export async function createGpuSignal(device) {
       pRef,
       bitsPerSymbol,
     }) {
-      const k = bitsPerSymbol ?? schemeBits(scheme);
-      if (k !== 1 && k !== 2) throw new Error(`bitsPerSymbol must be 1 or 2, got ${k}`);
+      const schemeK = schemeBits(scheme);
+      if (bitsPerSymbol !== undefined && bitsPerSymbol !== schemeK) {
+        throw new Error(`bitsPerSymbol ${bitsPerSymbol} conflicts with ${scheme}`);
+      }
+      const k = schemeK;
       requireSps(sps);
       requireFinite(ebn0dB, 'ebn0dB');
       requireCount(nBits, 'nBits');
       if (!h || h.length === 0) throw new Error('h must contain at least one tap');
-      const symbols = nSymbols === undefined ? Math.floor(nBits / k) : nSymbols;
-      if (!Number.isInteger(symbols) || symbols < 0) {
-        throw new Error(`nSymbols must be a non-negative integer, got ${symbols}`);
+      if (nSymbols !== undefined && (!Number.isInteger(nSymbols) || nSymbols < 0)) {
+        throw new Error(`nSymbols must be a non-negative integer, got ${nSymbols}`);
       }
+      const txSymbols = Math.floor(nBits / k);
+      const nTx = txSymbols * sps;
+      const outLen = nTx + h.length - 1;
+      if (!Number.isInteger(offset) || offset < 0 || offset > outLen) {
+        throw new Error(`offset must be an integer in [0, ${outLen}], got ${offset}`);
+      }
+      const room = Math.floor((outLen - offset) / sps);
+      const symbols = nSymbols === undefined ? txSymbols : nSymbols;
+      if (symbols > room) {
+        throw new Error(`nSymbols ${symbols} does not fit at offset ${offset} (room for ${room})`);
+      }
+      guardElements(Math.max(symbols, nTx, outLen), 'countErrors');
       const compared = symbols * k;
       if (compared === 0) return { errors: 0, nBits: 0, sigma: 0 };
-      const power = pRef !== undefined ? pRef : (k === 2 ? 2 : 1);
+      const power = pRef !== undefined
+        ? pRef
+        : await regionPower(symbols, sps, h, offset, asSeed(seed), k === 2 ? 1 : 0, nTx);
       if (!(power >= 0) || !Number.isFinite(power)) {
         throw new Error(`pRef must be a finite number >= 0, got ${power}`);
       }
@@ -352,7 +456,7 @@ export async function createGpuSignal(device) {
         sps,
         nTaps: h.length,
         offset,
-        nTx: symbols * sps,
+        nTx,
         seed: asSeed(seed),
         scheme: k === 2 ? 1 : 0,
         sigma,
@@ -370,12 +474,18 @@ export async function createGpuSignal(device) {
       });
       dispatch(ber, group, groupsOf(symbols));
       const words = await readU32(errBuf, 1);
-      destroyAll(params, taps, errBuf);
+      drop(params, taps, errBuf);
       return { errors: words[0], nBits: compared, sigma };
     },
 
+    /** Storage and uniform buffers still held. Zero after a finished call and after destroy(). */
+    bufferCount() {
+      return live.size;
+    },
+
     destroy() {
-      ber.destroy?.();
+      for (const buffer of live) buffer.destroy();
+      live.clear();
     },
   };
 }
@@ -409,9 +519,6 @@ function f32(values) {
   return out;
 }
 
-function destroyAll(...buffers) {
-  for (const buffer of buffers) buffer.destroy();
-}
 
 function pairLength(sig) {
   if (!sig || sig.i == null || sig.q == null) throw new Error('signal must be { i, q }');

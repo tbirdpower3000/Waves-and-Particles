@@ -33,9 +33,10 @@ fn u01(n: u32) -> f32 {
   return (f32(bits >> 8u) + 0.5) / 16777216.0;
 }
 
-fn gauss(idx: u32) -> f32 {
-  let u1 = u01(idx * 2u);
-  let u2 = u01(idx * 2u + 1u);
+fn gauss_at(n: u32, stream: u32) -> f32 {
+  let base = n + stream * 0x85ebca6bu + p.seed * 0x9e3779b9u;
+  let u1 = u01(base * 2u);
+  let u2 = u01(base * 2u + 1u);
   let mag = sqrt(-2.0 * log(u1));
   return mag * cos(6.283185307179586 * u2);
 }
@@ -65,9 +66,8 @@ fn errorsAt(sym: u32) -> u32 {
   var accQ = 0.0;
   for (var t = 0u; t < p.sps; t++) {
     let n = i32(p.offset + sym * p.sps + t);
-    let base = u32(max(n, 0)) * 2u;
-    accI += filtered(n, 0u) + p.sigma * gauss(base ^ p.seed);
-    accQ += filtered(n, 1u) + p.sigma * gauss((base + 1u) ^ p.seed);
+    accI += filtered(n, 0u) + p.sigma * gauss_at(u32(max(n, 0)), 0u);
+    accQ += filtered(n, 1u) + p.sigma * gauss_at(u32(max(n, 0)), 1u);
   }
   var errs = 0u;
   let bitI = bitOf(sym, 0u);
@@ -100,6 +100,41 @@ fn ber_main(@builtin(global_invocation_id) gid: vec3<u32>, @builtin(local_invoca
   }
   if (lid == 0u) {
     atomicAdd(&errCount[0], red[0]);
+  }
+}
+
+var<workgroup> energyRed: array<f32, 64>;
+
+@group(0) @binding(3) var<storage, read_write> partialEnergy: array<f32>;
+
+@compute @workgroup_size(64)
+fn power_main(
+  @builtin(global_invocation_id) gid: vec3<u32>,
+  @builtin(local_invocation_index) lid: u32,
+  @builtin(workgroup_id) wid: vec3<u32>,
+) {
+  var energy = 0.0;
+  if (gid.x < p.nSymbols) {
+    for (var t = 0u; t < p.sps; t++) {
+      let n = i32(p.offset + gid.x * p.sps + t);
+      let yi = filtered(n, 0u);
+      let yq = filtered(n, 1u);
+      energy += yi * yi + yq * yq;
+    }
+  }
+  energyRed[lid] = energy;
+  workgroupBarrier();
+  var stride = 32u;
+  loop {
+    if (stride == 0u) { break; }
+    if (lid < stride) {
+      energyRed[lid] += energyRed[lid + stride];
+    }
+    workgroupBarrier();
+    stride = stride >> 1u;
+  }
+  if (lid == 0u) {
+    partialEnergy[wid.x] = energyRed[0];
   }
 }
 `;
@@ -149,6 +184,8 @@ struct FftParams {
 @group(0) @binding(1) var<storage, read_write> re: array<f32>;
 @group(0) @binding(2) var<storage, read_write> im: array<f32>;
 @group(0) @binding(3) var<storage, read_write> mag: array<f32>;
+@group(0) @binding(4) var<storage, read> twRe: array<f32>;
+@group(0) @binding(5) var<storage, read> twIm: array<f32>;
 
 fn reverseBits(x: u32) -> u32 {
   var v = x;
@@ -175,27 +212,34 @@ fn fft_reverse(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 }
 
-@compute @workgroup_size(64)
-fn fft_stage(@builtin(global_invocation_id) gid: vec3<u32>) {
-  let half = p.len >> 1u;
-  let nButterfly = p.n >> 1u;
-  let id = gid.x;
-  if (id >= nButterfly) { return; }
-  let group = id / half;
-  let k = id - group * half;
-  let i0 = group * p.len + k;
-  let i1 = i0 + half;
-  let ang = -6.283185307179586 * f32(k) / f32(p.len);
-  let wRe = cos(ang);
-  let wIm = sin(ang);
-  let uRe = re[i0];
-  let uIm = im[i0];
-  let vRe = re[i1] * wRe - im[i1] * wIm;
-  let vIm = re[i1] * wIm + im[i1] * wRe;
-  re[i0] = uRe + vRe;
-  im[i0] = uIm + vIm;
-  re[i1] = uRe - vRe;
-  im[i1] = uIm - vIm;
+// One invocation. Twiddles are exp(-j 2 pi k / N) computed on the host in f64
+// and stored as f32. Each stage reads that table at stride N/len, so the
+// butterflies do not call GPU sin/cos or rotate a twiddle in a loop.
+// Per-bin cos(2 pi k/N) drifted past 1e-4 on random spectra.
+@compute @workgroup_size(1)
+fn fft_iter() {
+  let n = p.n;
+  for (var len = 2u; len <= n; len = len << 1u) {
+    let half = len >> 1u;
+    let stride = n / len;
+    for (var base = 0u; base < n; base = base + len) {
+      for (var k = 0u; k < half; k++) {
+        let tw = k * stride;
+        let curRe = twRe[tw];
+        let curIm = twIm[tw];
+        let i0 = base + k;
+        let i1 = i0 + half;
+        let oddRe = re[i1] * curRe - im[i1] * curIm;
+        let oddIm = re[i1] * curIm + im[i1] * curRe;
+        let evenRe = re[i0];
+        let evenIm = im[i0];
+        re[i0] = evenRe + oddRe;
+        im[i0] = evenIm + oddIm;
+        re[i1] = evenRe - oddRe;
+        im[i1] = evenIm - oddIm;
+      }
+    }
+  }
 }
 
 @compute @workgroup_size(64)
@@ -235,9 +279,10 @@ fn u01(n: u32) -> f32 {
   return (f32(bits >> 8u) + 0.5) / 16777216.0;
 }
 
-fn gauss(idx: u32) -> f32 {
-  let u1 = u01(idx * 2u);
-  let u2 = u01(idx * 2u + 1u);
+fn gauss_at(n: u32, stream: u32) -> f32 {
+  let base = n + stream * 0x85ebca6bu + p.seed * 0x9e3779b9u;
+  let u1 = u01(base * 2u);
+  let u2 = u01(base * 2u + 1u);
   let mag = sqrt(-2.0 * log(u1));
   return mag * cos(6.283185307179586 * u2);
 }
@@ -246,9 +291,8 @@ fn gauss(idx: u32) -> f32 {
 fn awgn_main(@builtin(global_invocation_id) gid: vec3<u32>) {
   let i = gid.x;
   if (i >= p.n) { return; }
-  let base = i * 2u;
-  outI[i] = inI[i] + p.sigma * gauss(base ^ p.seed);
-  outQ[i] = inQ[i] + p.sigma * gauss((base + 1u) ^ p.seed);
+  outI[i] = inI[i] + p.sigma * gauss_at(i, 0u);
+  outQ[i] = inQ[i] + p.sigma * gauss_at(i, 1u);
 }
 `;
 

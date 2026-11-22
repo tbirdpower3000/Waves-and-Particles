@@ -6,7 +6,7 @@ No build step. Browser loads ES modules from `src/` via `<script type="module">`
 | Path | Owner |
 |---|---|
 | `src/fdtd.js`, `src/gpu/*` , `tests/fdtd*.test.js` | Field-core agent |
-| `src/signal.js`, `src/rng.js`, `tests/signal*.test.js`, `tests/rng*.test.js` | Signal agent |
+| `src/signal.js`, `src/rng.js`, `src/gpu-signal/*`, `tests/signal*.test.js`, `tests/rng*.test.js`, `tests/gpu-signal-harness.js` | Signal agent |
 | `index.html`, `src/ui/*`, `.github/workflows/ci.yml`, `README.md`, `package.json`, `package-lock.json`, `tests/smoke*.test.js`, `tests/dev-mocks.js` | UI/CI agent |
 | `docs/fdtd-perf.md` | Field-core agent |
 | `docs/*` | scaffold only, except `docs/fdtd-perf.md` and amendments Code Lab names in this file |
@@ -38,6 +38,9 @@ export function ber(txBits, rxBits)
 export function berTheory(scheme, ebn0dB)
 export function fftMag(sig)                                         // -> Float64Array
 ```
+## src/gpu-signal/ (Signal agent, WebGPU compute)
+`export async function createGpuSignal(device)` compiles the shaders and returns the chain. Samples are f32 values in `Float64Array`. Stochastic methods take a uint32 `seed` (counter hash plus Box–Muller), not the CPU `rng`. `countErrors({ nBits, scheme, sps, ebn0dB, seed, h, offset, nSymbols, pRef, bitsPerSymbol })` keeps a BPSK/QPSK trial on the device and returns `{ errors, nBits, sigma }`. Omitted `pRef` is the mean power of the demodulated samples after `h`. `offset` and `nSymbols` follow r1.1 and throw when the window does not fit. Inputs above 4,194,240 elements or 128 MiB throw. `chirp` stays on the CPU. `ber` counts host arrays and throws on a length mismatch. `bufferCount()` is the number of buffers still held; `destroy()` destroys those buffers. Not imported by `index.html`.
+
 ## src/rng.js
 `export function makeRng(seed)` -> `{ uniform(), normal() }`, deterministic in Node and browser.
 
