@@ -4,7 +4,7 @@ Reported, not gated. Live numbers are printed by `node --test`.
 
 CPU figures are the float64 reference in `src/fdtd.js` (sine source, 8-cell CPML, 5 warmup steps excluded). GPU figures are `createGpuStepper` on the same grid, 2 warmup steps excluded, timed through one field readback so the queue is idle at the end.
 
-This VM has no discrete GPU. The WebGPU adapter is vendor `google`, architecture `swiftshader`, `isFallbackAdapter: false`. That is a software adapter, so A7 is UNKNOWN for real hardware. The software comparison still met the 1e-3 field tolerance (rel L2 1.86e-5 after 500 steps).
+This VM has no discrete GPU. The WebGPU adapter is vendor `google`, architecture `swiftshader`, and `adapter.info.isFallbackAdapter` is true. That is a software adapter, so A7 is UNKNOWN for real hardware. The software comparison still met the 1e-3 field tolerance (rel L2 1.86e-5 after 500 steps). WebGL2's masked `RENDERER` string is `WebKit WebGL`; the unmasked renderer from `WEBGL_debug_renderer_info` is `ANGLE ... SwiftShader`.
 
 ## Node v22.23.4
 

@@ -188,7 +188,7 @@ async function describeAdapter(adapter) {
     architecture: info.architecture ?? "",
     device: info.device ?? "",
     description: info.description ?? "",
-    isFallbackAdapter: adapter.isFallbackAdapter === true,
+    isFallbackAdapter: adapter.info?.isFallbackAdapter === true || info?.isFallbackAdapter === true,
   };
 }
 
