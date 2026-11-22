@@ -390,7 +390,7 @@ test('linear chirp sweeps from f0 to f1 at unit amplitude', () => {
   assert.ok(freqAt(n - 2) > freqAt(0));
 });
 
-test('GPU signal chain matches the CPU reference', { timeout: 180_000 }, async (t) => {
+test('GPU signal chain matches the CPU reference', { timeout: 300_000 }, async (t) => {
   const result = await runGpuSignalCheck();
   if (!result || result.unknown) {
     console.log(`UNKNOWN: no GPU adapter${result?.reason ? ` (${result.reason})` : ''}`);
@@ -422,7 +422,7 @@ test('GPU signal chain matches the CPU reference', { timeout: 180_000 }, async (
   assert.ok(result.nBits >= 1_000_000);
   assert.ok(bpskRel <= 0.20, `BPSK BER ${bpskRate}`);
   assert.ok(qpskRel <= 0.20, `QPSK BER ${qpskRate}`);
-  assert.ok(result.fftRel < 1e-4, `FFT rel ${result.fftRel}`);
+  assert.ok(result.fftRel < 1e-6, `FFT rel ${result.fftRel}`);
   assert.ok(result.firRel < 1e-4, `FIR rel ${result.firRel}`);
   assert.equal(result.limitBits, true);
   assert.equal(result.limitMod, true);
@@ -435,7 +435,27 @@ test('GPU signal chain matches the CPU reference', { timeout: 180_000 }, async (
   assert.ok(Math.abs(halfRate - THEORY[6]) / THEORY[6] <= 0.25, `h=0.5 BER ${halfRate}`);
   assert.ok(Math.abs(loudRate - THEORY[6]) / THEORY[6] <= 0.25, `h=2 BER ${loudRate}`);
   assert.ok(result.swapped < 8, `seed^1 swapped I/Q on ${result.swapped} samples`);
-  assert.ok(result.randRel < 1e-4, `random FFT rel ${result.randRel}`);
+  assert.equal(result.tailSymbols, true);
+  assert.equal(result.nullH, true);
+  assert.ok(Math.abs(result.acZ) < 3, `lag-1 autocorrelation z=${result.acZ}`);
+  assert.ok(result.randRel < 1e-6, `random FFT rel ${result.randRel}`);
+  for (const row of result.sweep) {
+    const theory = berTheory('bpsk', row.db);
+    const rate = row.errors / row.nBits;
+    assert.ok(Math.abs(rate - theory) / theory <= 0.20, `${row.db} dB BER ${rate} vs ${theory}`);
+  }
+  assert.ok(result.fft16.rel < 1e-6, `2^16 FFT rel ${result.fft16.rel}`);
+  assert.ok(result.fft21.rel < 1e-6, `2^21 FFT rel ${result.fft21.rel}`);
+  const fftKind = adapter.software ? 'software' : 'hardware';
+  console.log(
+    `FFT ${fftKind} N=2^16 GPU ${result.fft16.gpuMs.toFixed(1)} ms CPU ${result.fft16.cpuMs.toFixed(1)} ms rel=${result.fft16.rel.toExponential(3)}`,
+  );
+  console.log(
+    `FFT ${fftKind} N=2^21 GPU ${result.fft21.gpuMs.toFixed(1)} ms CPU ${result.fft21.cpuMs.toFixed(1)} ms rel=${result.fft21.rel.toExponential(3)}`,
+  );
+  console.log(
+    `BER sweep ${result.sweep.map((row) => `${row.db}dB ${row.errors}/${row.nBits}`).join('  ')} lag1 z=${result.acZ.toExponential(3)}`,
+  );
   assert.equal(result.liveBefore, 0);
   assert.equal(result.liveAfter, 0);
   assert.equal(typeof result.afterDestroy, 'number');
@@ -443,7 +463,11 @@ test('GPU signal chain matches the CPU reference', { timeout: 180_000 }, async (
     `limits=${result.limitBits}/${result.limitMod}/${result.limitSweep} offset=${result.badOffset} nSymbols=${result.badSymbols} k=${result.badK} h=0.5 errors=${result.halfErrors}/${result.halfBits} h=2 errors=${result.loudErrors}/${result.loudBits} swapped=${result.swapped} randFFT=${result.randRel.toExponential(3)}`,
   );
   if (adapter.software) {
-    console.log('UNKNOWN: software adapter (adapter.info SwiftShader or fallback); not a real-hardware pass');
+    assert.match(adapter.label, /^software renderer \(/);
+    if (/swiftshader/i.test(`${adapter.architecture} ${adapter.description} ${adapter.label}`)) {
+      assert.equal(adapter.label, 'software renderer (SwiftShader)');
+    }
+    console.log(`UNKNOWN: ${adapter.label}; not a hardware pass`);
     t.skip('UNKNOWN: software GPU adapter');
   }
 });

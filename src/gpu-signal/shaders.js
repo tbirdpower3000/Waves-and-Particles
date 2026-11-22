@@ -34,9 +34,13 @@ fn u01(n: u32) -> f32 {
 }
 
 fn gauss_at(n: u32, stream: u32) -> f32 {
-  let base = n + stream * 0x85ebca6bu + p.seed * 0x9e3779b9u;
-  let u1 = u01(base * 2u);
-  let u2 = u01(base * 2u + 1u);
+  // splitmix-style mix of the index, the seed, and the stream. Adding the
+  // seed into the index left neighboring samples correlated.
+  var z = mix(n);
+  z = mix(z ^ mix(p.seed));
+  z = mix(z ^ mix(stream * 0x9e3779b9u + 0x85ebca6bu));
+  let u1 = u01(z);
+  let u2 = u01(z ^ 0x6c62272eu);
   let mag = sqrt(-2.0 * log(u1));
   return mag * cos(6.283185307179586 * u2);
 }
@@ -212,34 +216,70 @@ fn fft_reverse(@builtin(global_invocation_id) gid: vec3<u32>) {
   }
 }
 
-// One invocation. Twiddles are exp(-j 2 pi k / N) computed on the host in f64
-// and stored as f32. Each stage reads that table at stride N/len, so the
-// butterflies do not call GPU sin/cos or rotate a twiddle in a loop.
-// Per-bin cos(2 pi k/N) drifted past 1e-4 on random spectra.
-@compute @workgroup_size(1)
-fn fft_iter() {
-  let n = p.n;
-  for (var len = 2u; len <= n; len = len << 1u) {
+// Host twiddles are exp(-j 2 pi k / N) in f64, stored as f32.
+// After bit reversal, each radix-2 stage is one workgroup dispatch.
+// A tile of 64 does the stages of length 2..64 in shared memory.
+// Longer stages run one butterfly per thread. log2(N) stages in total.
+var<workgroup> tileRe: array<f32, 64>;
+var<workgroup> tileIm: array<f32, 64>;
+
+fn butterfly_tile(i0: u32, i1: u32, tw: u32) {
+  let wr = twRe[tw];
+  let wi = twIm[tw];
+  let oddRe = tileRe[i1] * wr - tileIm[i1] * wi;
+  let oddIm = tileRe[i1] * wi + tileIm[i1] * wr;
+  let ar = tileRe[i0];
+  let ai = tileIm[i0];
+  tileRe[i0] = ar + oddRe;
+  tileIm[i0] = ai + oddIm;
+  tileRe[i1] = ar - oddRe;
+  tileIm[i1] = ai - oddIm;
+}
+
+fn butterfly_global(i0: u32, i1: u32, tw: u32) {
+  let wr = twRe[tw];
+  let wi = twIm[tw];
+  let oddRe = re[i1] * wr - im[i1] * wi;
+  let oddIm = re[i1] * wi + im[i1] * wr;
+  let ar = re[i0];
+  let ai = im[i0];
+  re[i0] = ar + oddRe;
+  im[i0] = ai + oddIm;
+  re[i1] = ar - oddRe;
+  im[i1] = ai - oddIm;
+}
+
+@compute @workgroup_size(64)
+fn fft_tile(@builtin(workgroup_id) wid: vec3<u32>, @builtin(local_invocation_index) lid: u32) {
+  let base = wid.x * 64u;
+  if (base >= p.n) { return; }
+  tileRe[lid] = re[base + lid];
+  tileIm[lid] = im[base + lid];
+  workgroupBarrier();
+  for (var len = 2u; len <= 64u; len = len << 1u) {
     let half = len >> 1u;
-    let stride = n / len;
-    for (var base = 0u; base < n; base = base + len) {
-      for (var k = 0u; k < half; k++) {
-        let tw = k * stride;
-        let curRe = twRe[tw];
-        let curIm = twIm[tw];
-        let i0 = base + k;
-        let i1 = i0 + half;
-        let oddRe = re[i1] * curRe - im[i1] * curIm;
-        let oddIm = re[i1] * curIm + im[i1] * curRe;
-        let evenRe = re[i0];
-        let evenIm = im[i0];
-        re[i0] = evenRe + oddRe;
-        im[i0] = evenIm + oddIm;
-        re[i1] = evenRe - oddRe;
-        im[i1] = evenIm - oddIm;
-      }
+    let stride = p.n / len;
+    if (lid < 32u) {
+      let group = lid / half;
+      let k = lid - group * half;
+      let i0 = group * len + k;
+      butterfly_tile(i0, i0 + half, k * stride);
     }
+    workgroupBarrier();
   }
+  re[base + lid] = tileRe[lid];
+  im[base + lid] = tileIm[lid];
+}
+
+@compute @workgroup_size(64)
+fn fft_stage(@builtin(global_invocation_id) gid: vec3<u32>) {
+  let half = p.len >> 1u;
+  let butterflyId = gid.x;
+  if (butterflyId >= (p.n >> 1u)) { return; }
+  let group = butterflyId / half;
+  let k = butterflyId - group * half;
+  let i0 = group * p.len + k;
+  butterfly_global(i0, i0 + half, k * (p.n / p.len));
 }
 
 @compute @workgroup_size(64)
@@ -280,9 +320,13 @@ fn u01(n: u32) -> f32 {
 }
 
 fn gauss_at(n: u32, stream: u32) -> f32 {
-  let base = n + stream * 0x85ebca6bu + p.seed * 0x9e3779b9u;
-  let u1 = u01(base * 2u);
-  let u2 = u01(base * 2u + 1u);
+  // splitmix-style mix of the index, the seed, and the stream. Adding the
+  // seed into the index left neighboring samples correlated.
+  var z = mix(n);
+  z = mix(z ^ mix(p.seed));
+  z = mix(z ^ mix(stream * 0x9e3779b9u + 0x85ebca6bu));
+  let u1 = u01(z);
+  let u2 = u01(z ^ 0x6c62272eu);
   let mag = sqrt(-2.0 * log(u1));
   return mag * cos(6.283185307179586 * u2);
 }
