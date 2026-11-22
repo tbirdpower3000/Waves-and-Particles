@@ -5,6 +5,9 @@ import { createServer } from 'node:http';
 import { extname, join, normalize } from 'node:path';
 import { test } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { makeRng } from '../src/rng.js';
+import * as signal from '../src/signal.js';
+import { runChannel } from '../src/ui/link.js';
 
 const root = fileURLToPath(new URL('..', import.meta.url));
 const MIME = {
@@ -200,6 +203,110 @@ test('A8 headless Chromium loads a first field frame at 1100x800 with no console
     if (process.env.WAP_SCREENSHOT) {
       await page.screenshot({ path: process.env.WAP_SCREENSHOT, fullPage: false });
     }
+  } finally {
+    await browser.close();
+    await hosted.close();
+  }
+});
+
+function impulseStats(samples) {
+  const h = Float64Array.from(samples);
+  const bits = signal.bitsRandom(512, makeRng(20261121));
+  const result = runChannel(signal, {
+    bits,
+    scheme: 'bpsk',
+    sps: 8,
+    h,
+    ebn0dB: 6,
+    rng: makeRng(7),
+  });
+  let peak = 0;
+  for (let i = 0; i < samples.length; i++) peak = Math.max(peak, Math.abs(samples[i]));
+  return { offset: result.offset, pRef: result.pRef, peak, length: samples.length };
+}
+
+function samplesWithinFloat32(cpu, gpu) {
+  assert.equal(gpu.length, cpu.length, `impulse length GPU ${gpu.length} CPU ${cpu.length}`);
+  let peak = 0;
+  let maxAbs = 0;
+  for (let i = 0; i < cpu.length; i++) {
+    peak = Math.max(peak, Math.abs(cpu[i]), Math.abs(gpu[i]));
+    maxAbs = Math.max(maxAbs, Math.abs(cpu[i] - gpu[i]));
+  }
+  const limit = Math.max(1e-5, peak * 1e-4);
+  assert.ok(maxAbs <= limit, `impulse max |GPU-CPU| ${maxAbs} peak ${peak} limit ${limit}`);
+}
+
+test('GPU and CPU pulse records share the impulse, offset, and pRef', { skip: process.env.WAP_BROWSER_SMOKE === '1' ? false : 'set WAP_BROWSER_SMOKE=1 to run the headless Chromium smoke' }, async () => {
+  let chromium;
+  try {
+    ({ chromium } = await import('playwright'));
+  } catch (err) {
+    assert.fail(`Playwright is required when WAP_BROWSER_SMOKE=1 (${err instanceof Error ? err.message : err})`);
+  }
+  const hosted = await serve(root);
+  const browser = await chromium.launch({
+    headless: true,
+    args: [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--enable-unsafe-webgpu',
+      '--enable-unsafe-swiftshader',
+      '--use-gl=angle',
+      '--use-angle=swiftshader',
+    ],
+  }).catch(() => chromium.launch({
+    headless: true,
+    channel: 'chrome',
+    args: [
+      '--no-sandbox',
+      '--disable-dev-shm-usage',
+      '--enable-unsafe-webgpu',
+      '--enable-unsafe-swiftshader',
+      '--use-gl=angle',
+      '--use-angle=swiftshader',
+    ],
+  }));
+  try {
+    const page = await browser.newPage({ viewport: { width: 1100, height: 800 }, deviceScaleFactor: 1 });
+    const errors = [];
+    page.on('pageerror', (err) => errors.push(String(err)));
+    await page.goto(`${hosted.url}?nx=32&ny=32&pml=4`, { waitUntil: 'load', timeout: 20000 });
+    await page.waitForFunction(() => {
+      const button = document.querySelector('#record-ir');
+      const state = document.querySelector('#field-state');
+      return button && !button.disabled && state && state.dataset.state === 'ready';
+    }, null, { timeout: 20000 });
+
+    async function capture() {
+      await page.evaluate(() => { document.querySelector('#field-canvas').__recordedProbes = null; });
+      await page.click('#record-ir');
+      await page.waitForFunction(() => {
+        const probes = document.querySelector('#field-canvas').__recordedProbes;
+        return Array.isArray(probes) && probes[0] && probes[0].samples.length > 0;
+      }, null, { timeout: 20000 });
+      return page.evaluate(() => document.querySelector('#field-canvas').__recordedProbes[0].samples);
+    }
+
+    const cpu = await capture();
+    await page.click('#use-gpu');
+    await page.waitForFunction(() => {
+      const name = document.querySelector('#backend-label')?.textContent || '';
+      return name.length > 0 && name !== 'cpu';
+    }, null, { timeout: 20000 });
+    const gpu = await capture();
+    const gpuAgain = await capture();
+    samplesWithinFloat32(cpu, gpu);
+    samplesWithinFloat32(gpu, gpuAgain);
+    const cpuLink = impulseStats(cpu);
+    const gpuLink = impulseStats(gpu);
+    const againLink = impulseStats(gpuAgain);
+    assert.equal(gpuLink.offset, cpuLink.offset, `offset GPU ${gpuLink.offset} CPU ${cpuLink.offset}`);
+    assert.equal(againLink.offset, cpuLink.offset);
+    const pLimit = Math.max(1e-8, Math.abs(cpuLink.pRef) * 1e-4);
+    assert.ok(Math.abs(gpuLink.pRef - cpuLink.pRef) <= pLimit, `pRef GPU ${gpuLink.pRef} CPU ${cpuLink.pRef}`);
+    assert.ok(Math.abs(againLink.pRef - cpuLink.pRef) <= pLimit, `pRef repeat ${againLink.pRef}`);
+    assert.deepEqual(errors, [], errors.join('\n'));
   } finally {
     await browser.close();
     await hosted.close();

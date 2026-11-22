@@ -6,8 +6,10 @@ import { fileURLToPath } from 'node:url';
 import { makeRng } from '../src/rng.js';
 import * as signal from '../src/signal.js';
 import { AXIS_LABELS, decimatePeaks, drawBer, drawConstellation, drawSeries, drawSpectrum } from '../src/ui/draw.js';
-import { formatDt } from '../src/ui/field-panel.js';
+import { formatDt, mountField, softwareBackendLabel } from '../src/ui/field-panel.js';
 import { courantDt } from '../src/fdtd.js';
+import * as fdtdLive from '../src/fdtd.js';
+import { createBus } from '../src/ui/bus.js';
 import {
   formatBer,
   mainCursor,
@@ -584,4 +586,180 @@ test('plain labels, tooltips, and the flagged readout fixes', () => {
     assert.ok(drawn.has(line), line);
   }
   assert.ok(qpsk.arcs[0] > 0 && bpsk.arcs[0] > 0);
+});
+
+test('software renderers are named, and the perf note stays with field-core', () => {
+  assert.equal(softwareBackendLabel('llvmpipe'), 'software renderer (llvmpipe)');
+  assert.equal(softwareBackendLabel('softpipe Mesa'), 'software renderer (softpipe)');
+  assert.equal(softwareBackendLabel('ANGLE (Google, SwiftShader)'), 'software renderer (SwiftShader)');
+  assert.equal(softwareBackendLabel('Generic Adapter', { fallback: true }), 'software renderer (software)');
+  assert.equal(softwareBackendLabel('NVIDIA'), '');
+  assert.match(read('docs/CONTRACT.md'), /Field-core agent \(A\) owns `docs\/fdtd-perf\.md`/);
+  assert.doesNotMatch(read('src/ui/field-panel.js'), /software \(SwiftShader\)/);
+});
+
+function linkStats(samples) {
+  const h = Float64Array.from(samples);
+  const bits = signal.bitsRandom(512, makeRng(20261121));
+  const result = runChannel(signal, {
+    bits,
+    scheme: 'bpsk',
+    sps: 8,
+    h,
+    ebn0dB: 6,
+    rng: makeRng(7),
+  });
+  return { offset: result.offset, pRef: result.pRef };
+}
+
+function installFieldDom() {
+  const ctx = {
+    fillStyle: '',
+    strokeStyle: '',
+    font: '',
+    lineWidth: 1,
+    imageSmoothingEnabled: true,
+    setTransform() {},
+    clearRect() {},
+    fillRect() {},
+    strokeRect() {},
+    beginPath() {},
+    moveTo() {},
+    lineTo() {},
+    closePath() {},
+    stroke() {},
+    fill() {},
+    arc() {},
+    fillText() {},
+    save() {},
+    restore() {},
+    setLineDash() {},
+    drawImage() {},
+    putImageData() {},
+    createImageData(w, h) {
+      return { data: new Uint8ClampedArray(Math.max(1, w) * Math.max(1, h) * 4), width: w, height: h };
+    },
+    getImageData() {
+      return { data: new Uint8ClampedArray(4), width: 1, height: 1 };
+    },
+  };
+  const nodes = new Map();
+  function createElement(tag) {
+    return {
+      tag,
+      id: '',
+      dataset: {},
+      style: {},
+      disabled: false,
+      value: '',
+      textContent: '',
+      title: '',
+      children: [],
+      attributes: {},
+      listeners: {},
+      classList: { add() {}, remove() {} },
+      setAttribute(name, value) { this.attributes[name] = String(value); },
+      getAttribute(name) { return this.attributes[name]; },
+      addEventListener(type, fn) { (this.listeners[type] ||= []).push(fn); },
+      removeEventListener() {},
+      append(...kids) { this.children.push(...kids); },
+      replaceChildren(...kids) { this.children = [...kids]; },
+      setPointerCapture() {},
+      getBoundingClientRect() { return { width: 320, height: 180, left: 0, top: 0, right: 320, bottom: 180 }; },
+      getContext(kind) { return kind === 'webgl' || kind === 'webgl2' ? null : ctx; },
+      width: 320,
+      height: 180,
+      clientWidth: 320,
+      clientHeight: 180,
+    };
+  }
+  for (const id of ['panel-field', 'field-canvas', 'field-state', 'field-readout', 'eps-r', 'play', 'pause', 'use-gpu', 'preset', 'freq', 'clear-geometry', 'reset', 'backend-label']) {
+    const node = createElement(id === 'field-canvas' ? 'canvas' : 'button');
+    node.id = id;
+    if (id === 'eps-r' || id === 'freq') node.value = id === 'freq' ? '24' : '4';
+    if (id === 'preset') node.value = 'free';
+    nodes.set(id, node);
+  }
+  const previous = {
+    document: globalThis.document,
+    ResizeObserver: globalThis.ResizeObserver,
+    requestAnimationFrame: globalThis.requestAnimationFrame,
+  };
+  globalThis.document = {
+    getElementById: (id) => nodes.get(id) ?? null,
+    createElement,
+    querySelectorAll: () => [],
+    addEventListener() {},
+    removeEventListener() {},
+  };
+  globalThis.ResizeObserver = class { observe() {} disconnect() {} };
+  globalThis.requestAnimationFrame = (fn) => setTimeout(fn, 0);
+  return {
+    restore() {
+      globalThis.document = previous.document;
+      globalThis.ResizeObserver = previous.ResizeObserver;
+      globalThis.requestAnimationFrame = previous.requestAnimationFrame;
+    },
+  };
+}
+
+test('a GPU record waits for the backend switch and matches the CPU impulse', async () => {
+  const dom = installFieldDom();
+  const previousGpu = globalThis.navigator?.gpu;
+  try {
+    if (globalThis.navigator) globalThis.navigator.gpu = undefined;
+    let gpuSteps = 0;
+    const gpuNs = {
+      async createGpuStepper(grid) {
+        const twin = structuredClone(grid);
+        if (twin.mode === 'tmz') twin.Ez = twin.field;
+        else twin.u = twin.field;
+        await new Promise((resolve) => setTimeout(resolve, 0));
+        return {
+          backend: 'webgpu',
+          step(n = 1) {
+            gpuSteps += n;
+            fdtdLive.step(twin, n);
+          },
+          async readField() { return fdtdLive.snapshot(twin); },
+          readProbes() { return twin.probes; },
+          destroy() {},
+        };
+      },
+    };
+    const contract = {
+      fdtd: { ready: true, ns: fdtdLive },
+      gpu: { ready: false, ns: gpuNs },
+    };
+    const field = mountField(document, createBus(), { nx: 32, ny: 32, pml: 4 });
+    await field.setContract(contract);
+    await field.recordImpulse();
+    const cpu = document.getElementById('field-canvas').__recordedProbes;
+    assert.ok(cpu?.[0]?.samples?.length > 16, 'CPU record produced no impulse');
+    assert.equal(gpuSteps, 0);
+
+    contract.gpu.ready = true;
+    gpuSteps = 0;
+    document.getElementById('use-gpu').listeners.click[0]();
+    await field.recordImpulse();
+    const gpu = document.getElementById('field-canvas').__recordedProbes;
+    assert.equal(gpuSteps, 64, `GPU stepper took ${gpuSteps} of 64 steps`);
+    assert.equal(gpu[0].samples.length, cpu[0].samples.length);
+    for (let i = 0; i < cpu[0].samples.length; i++) {
+      assert.equal(gpu[0].samples[i], cpu[0].samples[i], `sample ${i}`);
+    }
+    const cpuLink = linkStats(cpu[0].samples);
+    const gpuLink = linkStats(gpu[0].samples);
+    assert.equal(gpuLink.offset, cpuLink.offset);
+    assert.equal(gpuLink.pRef, cpuLink.pRef);
+    await field.recordImpulse();
+    const again = document.getElementById('field-canvas').__recordedProbes;
+    const againLink = linkStats(again[0].samples);
+    assert.equal(againLink.offset, cpuLink.offset);
+    assert.equal(againLink.pRef, cpuLink.pRef);
+  } finally {
+    if (globalThis.navigator) globalThis.navigator.gpu = previousGpu;
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    dom.restore();
+  }
 });

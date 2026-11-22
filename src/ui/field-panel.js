@@ -18,6 +18,20 @@ function must(id) {
   return el;
 }
 
+export function softwareRendererName(text, { fallback = false } = {}) {
+  const lower = String(text || '').toLowerCase();
+  if (lower.includes('swiftshader')) return 'SwiftShader';
+  if (lower.includes('llvmpipe')) return 'llvmpipe';
+  if (lower.includes('softpipe')) return 'softpipe';
+  if (fallback) return 'software';
+  return '';
+}
+
+export function softwareBackendLabel(text, options) {
+  const name = softwareRendererName(text, options);
+  return name ? `software renderer (${name})` : '';
+}
+
 export function formatDt(seconds) {
   if (!Number.isFinite(seconds)) return '—';
   return `${(seconds * 1e9).toFixed(3)} ns`;
@@ -50,7 +64,9 @@ export function mountField(doc, bus, params = {}) {
   let solverReady = false;
   let fps = 0;
   let softwareGpu = false;
+  let softwareName = '';
   let gpuEpoch = 0;
+  let gate = Promise.resolve();
 
   const toolButtons = [...doc.querySelectorAll('[data-tool]')];
   const modeButtons = [...doc.querySelectorAll('[data-mode]')];
@@ -62,13 +78,19 @@ export function mountField(doc, bus, params = {}) {
     }
   }
 
+  function enqueue(job) {
+    const run = gate.then(job, job);
+    gate = run.then(() => {}, () => {});
+    return run;
+  }
+
   function selectMode(next) {
     scene.mode = next === 'scalar' ? 'scalar' : 'tmz';
     for (const button of modeButtons) {
       button.setAttribute('aria-pressed', String(button.dataset.mode === scene.mode));
     }
     panel.dataset.mode = scene.mode;
-    rebuild('time');
+    return rebuild('time');
   }
 
   function updateTransport() {
@@ -84,7 +106,7 @@ export function mountField(doc, bus, params = {}) {
 
   function activeBackend() {
     if (!solverReady || !gpuOn) return 'cpu';
-    if (softwareGpu) return 'software (SwiftShader)';
+    if (softwareGpu) return `software renderer (${softwareName})`;
     return stepper?.backend || 'gpu';
   }
 
@@ -161,9 +183,9 @@ export function mountField(doc, bus, params = {}) {
     };
   }
 
-  async function readProbes() {
+  async function readProbes(from = stepper) {
     try {
-      const remote = await stepper?.readProbes?.();
+      const remote = await from?.readProbes?.();
       if (remote) return remote;
     } catch {
       /* fall through to the grid */
@@ -183,7 +205,11 @@ export function mountField(doc, bus, params = {}) {
     });
   }
 
-  async function rebuild(reason) {
+  function rebuild(reason) {
+    return enqueue(() => rebuildNow(reason));
+  }
+
+  async function rebuildNow(reason) {
     const keepGpu = gpuOn;
     stopLoop();
     if (stepper) {
@@ -225,6 +251,7 @@ export function mountField(doc, bus, params = {}) {
     } else {
       gpuOn = false;
       softwareGpu = false;
+      softwareName = '';
       setReadyState(stateEl, 'ready', 'cpu');
       updateTransport();
     }
@@ -232,10 +259,12 @@ export function mountField(doc, bus, params = {}) {
 
   async function enableGpu(on) {
     const epoch = ++gpuEpoch;
+    stopLoop();
     if (!on) {
       if (solverReady && grid) stepper = cpuStepper(contract.fdtd.ns, grid);
       gpuOn = false;
       softwareGpu = false;
+      softwareName = '';
       message = 'backend cpu';
       if (solverReady) setReadyState(stateEl, 'ready', 'cpu');
       updateTransport();
@@ -261,7 +290,10 @@ export function mountField(doc, bus, params = {}) {
         destroy() { try { handle.destroy?.(); } catch { /* ignore */ } },
       };
       gpuOn = true;
-      softwareGpu = await softwareRenderer();
+      softwareName = '';
+      const detected = await softwareRenderer();
+      softwareGpu = Boolean(detected);
+      softwareName = detected;
       const label = activeBackend();
       message = `backend ${label}`;
       setReadyState(stateEl, 'ready', label);
@@ -269,6 +301,7 @@ export function mountField(doc, bus, params = {}) {
       if (epoch !== gpuEpoch) return;
       gpuOn = false;
       softwareGpu = false;
+      softwareName = '';
       if (grid && contract?.fdtd?.ns) stepper = cpuStepper(contract.fdtd.ns, grid);
       message = err instanceof Error ? err.message : String(err);
       setReadyState(stateEl, 'ready', 'cpu');
@@ -279,12 +312,13 @@ export function mountField(doc, bus, params = {}) {
 
   async function softwareRenderer() {
     try {
-      const gpu = globalThis.navigator?.gpu;
-      if (gpu?.requestAdapter) {
-        const adapter = await gpu.requestAdapter();
+      const gpuApi = globalThis.navigator?.gpu;
+      if (gpuApi?.requestAdapter) {
+        const adapter = await gpuApi.requestAdapter();
         const info = adapter?.info;
-        const text = `${info?.vendor || ''} ${info?.architecture || ''} ${info?.description || ''} ${info?.device || ''}`.toLowerCase();
-        if (info?.isFallbackAdapter || text.includes('swiftshader') || text.includes('llvmpipe')) return true;
+        const text = `${info?.vendor || ''} ${info?.architecture || ''} ${info?.description || ''} ${info?.device || ''}`;
+        const name = softwareRendererName(text, { fallback: Boolean(info?.isFallbackAdapter) });
+        if (name) return name;
       }
     } catch { /* the CPU label stays if the adapter cannot be named */ }
     try {
@@ -292,10 +326,9 @@ export function mountField(doc, bus, params = {}) {
       const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
       const ext = gl?.getExtension?.('WEBGL_debug_renderer_info');
       const renderer = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '') : '';
-      const text = renderer.toLowerCase();
-      return text.includes('swiftshader') || text.includes('llvmpipe') || text.includes('softpipe');
+      return softwareRendererName(renderer);
     } catch {
-      return false;
+      return '';
     }
   }
 
@@ -306,8 +339,10 @@ export function mountField(doc, bus, params = {}) {
       return;
     }
     if (running) return;
-    if (!stepper) rebuild('time');
-    if (!stepper) return;
+    await gate;
+    if (running) return;
+    if (!stepper) await rebuild('time');
+    if (!stepper || running) return;
     running = true;
     const token = generation;
     updateTransport();
@@ -384,8 +419,9 @@ export function mountField(doc, bus, params = {}) {
       updateReadout();
       return;
     }
-    rebuild('record');
-    if (!stepper) return;
+    await rebuild('record');
+    const active = stepper;
+    if (!active) return;
     recording = true;
     const token = generation;
     const budget = Math.min(4000, scene.nx * 2);
@@ -393,11 +429,11 @@ export function mountField(doc, bus, params = {}) {
     try {
       for (let done = 0; done < budget && recording && token === generation; done += batch) {
         const n = Math.min(batch, budget - done);
-        await stepper.step(n);
+        await active.step(n);
         if (token !== generation) return;
         steps += n;
-        lastField = await stepper.readField();
-        emitSamples(await readProbes());
+        lastField = await active.readField();
+        emitSamples(await readProbes(active));
         message = `recording ${steps}/${budget}`;
         draw();
         await new Promise((resolve) => setTimeout(resolve, 0));
@@ -410,12 +446,17 @@ export function mountField(doc, bus, params = {}) {
       return;
     }
     if (token !== generation) return;
-    const probes = await readProbes();
+    const probes = await readProbes(active);
     const list = (Array.isArray(probes) ? probes : Array.from(probes ?? [])).map((probe, index) => ({
       index,
       i: probe?.i ?? scene.probes[index]?.i,
       j: probe?.j ?? scene.probes[index]?.j,
       samples: Float64Array.from(probe?.samples ?? []),
+    }));
+    canvas.__recordedProbes = list.map((probe) => ({
+      i: probe.i,
+      j: probe.j,
+      samples: Array.from(probe.samples),
     }));
     recording = false;
     message = `recorded ${steps} steps`;
@@ -447,7 +488,7 @@ export function mountField(doc, bus, params = {}) {
     }
   }
 
-  function applyPreset(name) {
+  async function applyPreset(name) {
     const y0 = Math.min(scene.ny - 2, scene.pml + 2);
     const y1 = Math.max(y0, scene.ny - scene.pml - 3);
     scene.materials = [];
@@ -468,16 +509,16 @@ export function mountField(doc, bus, params = {}) {
     placeDefaultSource();
     const preset = doc.getElementById('preset');
     if (preset) preset.value = name === 'pec' || name === 'slab' ? name : 'free';
-    rebuild('time');
+    await rebuild('time');
   }
 
-  function commitGeometry(nextMessage) {
+  async function commitGeometry(nextMessage) {
     message = nextMessage;
     markCustom();
-    rebuild('geometry');
+    await rebuild('geometry');
   }
 
-  canvas.addEventListener('pointerdown', (event) => {
+  canvas.addEventListener('pointerdown', async (event) => {
     if (event.button !== 0) return;
     event.preventDefault();
     canvas.setPointerCapture(event.pointerId);
@@ -485,7 +526,7 @@ export function mountField(doc, bus, params = {}) {
     if (!cell) return;
     if (tool === 'tx') {
       scene.source = { i: cell.i, j: cell.j, kind: 'sine' };
-      commitGeometry(`transmitter at ${cell.i},${cell.j}`);
+      await commitGeometry(`transmitter at ${cell.i},${cell.j}`);
       return;
     }
     if (tool === 'rx') {
@@ -495,7 +536,7 @@ export function mountField(doc, bus, params = {}) {
         draw();
         return;
       }
-      commitGeometry(`probe ${scene.probes.length} at ${cell.i},${cell.j}`);
+      await commitGeometry(`probe ${scene.probes.length} at ${cell.i},${cell.j}`);
       return;
     }
     drag = { tool, a: cell, b: cell };
@@ -511,14 +552,14 @@ export function mountField(doc, bus, params = {}) {
     draw();
   });
 
-  canvas.addEventListener('pointerup', () => {
+  canvas.addEventListener('pointerup', async () => {
     if (!drag) return;
     const rect = rectFromCells(drag.a, drag.b);
     const toolName = drag.tool;
     drag = null;
     scene.epsR = Number(epsInput.value);
     scene.materials.push(materialFromRect(rect, toolName, scene.epsR));
-    commitGeometry(toolName === 'metal' ? 'metal wall' : `dielectric eps_r ${scene.epsR}`);
+    await commitGeometry(toolName === 'metal' ? 'metal wall' : `dielectric eps_r ${scene.epsR}`);
   });
 
   canvas.addEventListener('pointercancel', () => {
@@ -530,7 +571,7 @@ export function mountField(doc, bus, params = {}) {
     button.addEventListener('click', () => selectTool(button.dataset.tool));
   }
   for (const button of modeButtons) {
-    button.addEventListener('click', () => selectMode(button.dataset.mode));
+    button.addEventListener('click', () => { selectMode(button.dataset.mode); });
   }
   epsInput.addEventListener('change', () => {
     const value = Number(epsInput.value);
@@ -555,7 +596,7 @@ export function mountField(doc, bus, params = {}) {
     message = 'geometry cleared';
     rebuild('geometry');
   });
-  must('use-gpu').addEventListener('click', () => { enableGpu(!gpuOn); });
+  must('use-gpu').addEventListener('click', () => { enqueue(() => enableGpu(!gpuOn)); });
   must('preset').addEventListener('change', () => {
     const name = must('preset').value;
     if (name === 'custom') return;
@@ -599,7 +640,7 @@ export function mountField(doc, bus, params = {}) {
   return {
     draw,
     recordImpulse,
-    setContract(next) {
+    async setContract(next) {
       contract = next;
       solverReady = Boolean(next?.fdtd?.ready && next.fdtd.ns);
       if (!solverReady) {
@@ -608,10 +649,10 @@ export function mountField(doc, bus, params = {}) {
         message = COMING_SOON_TEXT;
       } else {
         setReadyState(stateEl, 'ready', 'cpu');
-        if (!scene.source && scene.materials.length === 0) applyPreset('free');
+        if (!scene.source && scene.materials.length === 0) await applyPreset('free');
         else {
           message = 'backend cpu';
-          rebuild('time');
+          await rebuild('time');
         }
       }
       updateTransport();

@@ -26,8 +26,8 @@ function boot() {
   channel.draw();
   signal.draw();
   loadContract()
-    .then((contract) => {
-      field.setContract(contract);
+    .then(async (contract) => {
+      await field.setContract(contract);
       channel.setContract(contract);
       signal.setContract(contract);
     })
