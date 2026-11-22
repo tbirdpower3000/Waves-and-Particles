@@ -50,6 +50,8 @@ export function mountField(doc, bus, params = {}) {
   let tool = 'metal';
   let solverReady = false;
   let fps = 0;
+  let softwareGpu = false;
+  let gpuEpoch = 0;
 
   const toolButtons = [...doc.querySelectorAll('[data-tool]')];
   const modeButtons = [...doc.querySelectorAll('[data-mode]')];
@@ -82,8 +84,9 @@ export function mountField(doc, bus, params = {}) {
   }
 
   function activeBackend() {
-    if (!solverReady) return 'cpu';
-    return gpuOn ? (stepper?.backend || 'gpu') : 'cpu';
+    if (!solverReady || !gpuOn) return 'cpu';
+    if (softwareGpu) return 'software (SwiftShader)';
+    return stepper?.backend || 'gpu';
   }
 
   function showBackend() {
@@ -103,8 +106,8 @@ export function mountField(doc, bus, params = {}) {
       scene.mode,
       `dt ${fmt(grid?.dt)}`,
       `step ${steps}`,
-      `${rate.toFixed(0)} step/s`,
-      `${fps.toFixed(0)} fps`,
+      `${rate.toFixed(0)} solver step/s`,
+      `${fps.toFixed(0)} frames/s`,
       `backend ${activeBackend()}`,
       `threads ${threads}`,
       cell,
@@ -172,18 +175,20 @@ export function mountField(doc, bus, params = {}) {
     });
   }
 
-  function rebuild(reason) {
+  async function rebuild(reason) {
+    const keepGpu = gpuOn;
     stopLoop();
     if (stepper) {
       try { stepper.destroy(); } catch { /* ignore a dead stepper */ }
     }
     stepper = null;
-    gpuOn = false;
     grid = null;
     lastField = null;
     steps = 0;
     rate = 0;
+    fps = 0;
     if (!solverReady) {
+      gpuOn = false;
       bus.emit('scene', { reset: true });
       draw();
       updateTransport();
@@ -197,20 +202,34 @@ export function mountField(doc, bus, params = {}) {
       lastField = contract.fdtd.ns.snapshot(grid);
       message = reason === 'record' ? 'recording impulse' : 'grid rebuilt';
     } catch (err) {
+      gpuOn = false;
       message = err instanceof Error ? err.message : String(err);
       setReadyState(stateEl, 'error', message);
+      bus.emit('scene', { reset: true });
+      draw();
+      updateTransport();
+      return;
     }
     bus.emit('scene', { reset: true });
     draw();
-    updateTransport();
+    if (keepGpu && contract?.gpu?.ready) {
+      await enableGpu(true);
+    } else {
+      gpuOn = false;
+      softwareGpu = false;
+      setReadyState(stateEl, 'ready', 'cpu');
+      updateTransport();
+    }
   }
 
   async function enableGpu(on) {
+    const epoch = ++gpuEpoch;
     if (!on) {
       if (solverReady && grid) stepper = cpuStepper(contract.fdtd.ns, grid);
       gpuOn = false;
+      softwareGpu = false;
       message = 'backend cpu';
-      setReadyState(stateEl, 'ready', 'cpu');
+      if (solverReady) setReadyState(stateEl, 'ready', 'cpu');
       updateTransport();
       updateReadout();
       return;
@@ -219,6 +238,10 @@ export function mountField(doc, bus, params = {}) {
       const cells = gpuBufferGate(scene.nx, scene.ny);
       if (!contract?.gpu?.ready || !grid || cells < 1) return;
       const handle = await contract.gpu.ns.createGpuStepper(grid, { backend: 'auto' });
+      if (epoch !== gpuEpoch) {
+        try { handle.destroy?.(); } catch { /* a newer toggle won */ }
+        return;
+      }
       if (stepper) {
         try { stepper.destroy(); } catch { /* ignore */ }
       }
@@ -230,16 +253,42 @@ export function mountField(doc, bus, params = {}) {
         destroy() { try { handle.destroy?.(); } catch { /* ignore */ } },
       };
       gpuOn = true;
-      message = `backend ${stepper.backend}`;
-      setReadyState(stateEl, 'ready', stepper.backend);
+      softwareGpu = await softwareRenderer();
+      const label = activeBackend();
+      message = `backend ${label}`;
+      setReadyState(stateEl, 'ready', label);
     } catch (err) {
+      if (epoch !== gpuEpoch) return;
       gpuOn = false;
+      softwareGpu = false;
       if (grid && contract?.fdtd?.ns) stepper = cpuStepper(contract.fdtd.ns, grid);
       message = err instanceof Error ? err.message : String(err);
       setReadyState(stateEl, 'ready', 'cpu');
     }
     updateTransport();
     updateReadout();
+  }
+
+  async function softwareRenderer() {
+    try {
+      const gpu = globalThis.navigator?.gpu;
+      if (gpu?.requestAdapter) {
+        const adapter = await gpu.requestAdapter();
+        const info = adapter?.info;
+        const text = `${info?.vendor || ''} ${info?.architecture || ''} ${info?.description || ''} ${info?.device || ''}`.toLowerCase();
+        if (info?.isFallbackAdapter || text.includes('swiftshader') || text.includes('llvmpipe')) return true;
+      }
+    } catch { /* the CPU label stays if the adapter cannot be named */ }
+    try {
+      const canvas = doc.createElement('canvas');
+      const gl = canvas.getContext('webgl2') || canvas.getContext('webgl');
+      const ext = gl?.getExtension?.('WEBGL_debug_renderer_info');
+      const renderer = ext ? String(gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) || '') : '';
+      const text = renderer.toLowerCase();
+      return text.includes('swiftshader') || text.includes('llvmpipe') || text.includes('softpipe');
+    } catch {
+      return false;
+    }
   }
 
   async function play() {
@@ -256,12 +305,15 @@ export function mountField(doc, bus, params = {}) {
     updateTransport();
     let windowStart = performance.now();
     let windowSteps = 0;
+    let solverMs = 0;
     let frames = 0;
     let fpsStart = windowStart;
     while (running && token === generation) {
       const active = stepper;
       try {
+        const started = performance.now();
         await active.step(1);
+        solverMs += performance.now() - started;
         if (token !== generation) return;
         steps += 1;
         windowSteps += 1;
@@ -278,8 +330,9 @@ export function mountField(doc, bus, params = {}) {
       const now = performance.now();
       frames += 1;
       if (now - windowStart >= 500) {
-        rate = (windowSteps / (now - windowStart)) * 1000;
+        rate = solverMs > 0 ? (windowSteps / solverMs) * 1000 : 0;
         windowSteps = 0;
+        solverMs = 0;
         windowStart = now;
       }
       if (now - fpsStart >= 500) {

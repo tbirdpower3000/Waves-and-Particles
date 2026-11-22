@@ -3,18 +3,60 @@
 // index and nSymbols = transmitted symbols. awgn(..., { pRef }) uses the
 // mean power of that symbol region, not the zero-padded buffer.
 
-export function mainTap(h) {
-  if (!h || h.length === 0) return 0;
+function tapParts(value) {
+  if (value != null && typeof value === 'object') {
+    const re = Number(value.re ?? value.i ?? 0);
+    const im = Number(value.im ?? value.q ?? 0);
+    return {
+      re: Number.isFinite(re) ? re : 0,
+      im: Number.isFinite(im) ? im : 0,
+    };
+  }
+  const re = Number(value);
+  return { re: Number.isFinite(re) ? re : 0, im: 0 };
+}
+
+// Largest tap by magnitude. The returned phasor keeps the tap's sign and,
+// for a complex tap, its phase, so a negative cursor does not invert the bits.
+export function mainCursor(h) {
+  if (!h || h.length === 0) return { index: 0, re: 1, im: 0 };
   let best = 0;
   let mag = 0;
+  let bestRe = 0;
+  let bestIm = 0;
   for (let i = 0; i < h.length; i++) {
-    const value = Math.abs(Number(h[i]));
-    if (Number.isFinite(value) && value > mag) {
-      mag = value;
+    const part = tapParts(h[i]);
+    const size = Math.hypot(part.re, part.im);
+    if (size > mag) {
+      mag = size;
       best = i;
+      bestRe = part.re;
+      bestIm = part.im;
     }
   }
-  return best;
+  if (!(mag > 0)) return { index: best, re: 1, im: 0 };
+  return { index: best, re: bestRe / mag, im: bestIm / mag };
+}
+
+export function mainTap(h) {
+  return mainCursor(h).index;
+}
+
+// Multiply by the conjugate of the main-tap phasor. A real negative tap is a
+// phase of pi, which flips BPSK and both QPSK rails before the decision.
+export function alignToCursor(sig, cursor) {
+  const re = cursor?.re ?? 1;
+  const im = cursor?.im ?? 0;
+  const n = sig.i.length;
+  const i = new Float64Array(n);
+  const q = new Float64Array(n);
+  for (let k = 0; k < n; k++) {
+    const x = sig.i[k];
+    const y = sig.q[k];
+    i[k] = re * x + im * y;
+    q[k] = re * y - im * x;
+  }
+  return { i, q };
 }
 
 export function regionPower(sig, offset, len) {
@@ -113,7 +155,8 @@ export function runChannel(api, { bits, scheme, sps, h, ebn0dB, rng }) {
   const txBits = bits.subarray(0, nSymbols * k);
   const modulated = api.modulate(txBits, { scheme, sps });
   const clean = api.convolveChannel(modulated, taps);
-  const offset = mainTap(taps);
+  const cursor = mainCursor(taps);
+  const offset = cursor.index;
   const span = nSymbols * sps;
   const pRef = regionPower(clean, offset, span);
   const noisy = api.awgn(clean, {
@@ -123,21 +166,24 @@ export function runChannel(api, { bits, scheme, sps, h, ebn0dB, rng }) {
     rng,
     pRef,
   });
-  const rxBits = api.demodulate(noisy, {
+  const aligned = alignToCursor(noisy, cursor);
+  const rxBits = api.demodulate(aligned, {
     scheme,
     sps,
     offset,
     nSymbols,
   });
   const errorRate = api.ber(txBits, rxBits);
-  return { clean, noisy, txBits, rxBits, offset, nSymbols, pRef, errorRate, h: taps, span };
+  return {
+    clean, noisy: aligned, txBits, rxBits, offset, nSymbols, pRef, errorRate, h: taps, span, cursor,
+  };
 }
 
 export function runChirp(api, { h, ebn0dB, rng, f0, f1, T, fs }) {
   const taps = tapsOf(h);
   const tone = api.chirp({ f0, f1, T, fs });
   const clean = api.convolveChannel(tone, taps);
-  const offset = mainTap(taps);
+  const offset = mainCursor(taps).index;
   const span = tone.i.length;
   const pRef = regionPower(clean, offset, span);
   const noisy = api.awgn(clean, {

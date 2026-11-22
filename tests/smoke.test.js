@@ -8,6 +8,7 @@ import * as signal from '../src/signal.js';
 import { decimatePeaks } from '../src/ui/draw.js';
 import {
   formatBer,
+  mainCursor,
   mainTap,
   regionPower,
   runChannel,
@@ -116,7 +117,7 @@ test('production UI does not statically import the parallel modules or dev mocks
     }
   }
   const link = read('src/ui/link.js');
-  assert.match(link, /demodulate\(\s*noisy,\s*\{[^}]*offset[^}]*nSymbols/);
+  assert.match(link, /demodulate\(\s*aligned,\s*\{[^}]*offset[^}]*nSymbols/);
   assert.match(link, /pRef/);
   const panel = read('src/ui/signal-panel.js');
   assert.match(panel, /runLinkSafely/);
@@ -275,6 +276,10 @@ test('channel path passes the main tap, symbol count, and signal-region power', 
   const h = new Float64Array([0, 0, 0, 1]);
   assert.equal(mainTap(h), 3);
   assert.equal(mainTap(new Float64Array([1])), 0);
+  assert.equal(mainTap(new Float64Array([-3, 1])), 0);
+  const negativeCursor = mainCursor(new Float64Array([0, -2]));
+  assert.equal(negativeCursor.index, 1);
+  assert.ok(negativeCursor.re < 0 && negativeCursor.im === 0);
 
   const calls = [];
   const api = {
@@ -323,6 +328,25 @@ test('channel path passes the main tap, symbol count, and signal-region power', 
   });
   assert.equal(delayed.offset, 3);
   assert.ok(delayed.errorRate < 0.05, `delayed BER ${delayed.errorRate}`);
+
+  for (const scheme of ['bpsk', 'qpsk']) {
+    const nBits = 20000;
+    const negative = runChannel(signal, {
+      bits: signal.bitsRandom(nBits, makeRng(20261121)),
+      scheme,
+      sps: 8,
+      h: new Float64Array([0, 0, -1]),
+      ebn0dB: 6,
+      rng: makeRng(99),
+    });
+    const theory = signal.berTheory(scheme, 6);
+    const errors = negative.errorRate * negative.txBits.length;
+    const expected = theory * negative.txBits.length;
+    const z = Math.abs(errors - expected) / Math.sqrt(Math.max(expected, 1));
+    assert.ok(z < 4, `${scheme} negative tap z=${z.toFixed(2)} BER ${negative.errorRate}`);
+    assert.ok(negative.errorRate < 0.05, `${scheme} negative tap BER ${negative.errorRate}`);
+    assert.ok(negative.cursor.re < 0);
+  }
 
   const thrown = runLinkSafely({
     ...api,
@@ -400,8 +424,9 @@ test('README lists every test file and CI runs node --test on Node 20 and 22', (
   assert.match(readme, /S=0\.700036/);
   assert.match(readme, /0\.335932/);
   assert.match(readme, /SwiftShader/);
-  assert.match(readme, /UNKNOWN/);
-  assert.match(readme, /pending/);
+  assert.match(readme, /UNKNOWN on SwiftShader/);
+  assert.doesNotMatch(readme, /A7[\s\S]{0,180}PASS/);
+  assert.match(readme, /docs\/fdtd-perf\.md/);
   assert.match(readme, /gprMax/);
   assert.match(readme, /node --test/);
   assert.match(readme, /Node 20/);

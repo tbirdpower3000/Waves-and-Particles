@@ -15,7 +15,7 @@ python3 -m http.server 8000
 
 ## What it does
 
-- **Field:** a 512×512 TMz or scalar grid. Draw metal and dielectric, or pick a preset: free space, a PEC wall, or an εr=4 slab. Set the source in cells per wavelength. Play, pause, and reset call `step`. The GPU button calls `createGpuStepper` and falls back to the CPU reference. The backend name (`cpu`, `webgpu`, or `webgl2`) is labeled on the panel. The footer reports frames per second and steps per second.
+- **Field:** a 512×512 TMz or scalar grid. Draw metal and dielectric, or pick a preset: free space, a PEC wall, or an εr=4 slab. Set the source in cells per wavelength. Play, pause, and reset call `step`. The GPU button calls `createGpuStepper` and falls back to the CPU reference. The label names the active backend, including `software (SwiftShader)` when the adapter is a software fallback. The footer shows frames/s for the view and solver step/s for the time spent inside `step`. A9 is recorded in [docs/fdtd-perf.md](docs/fdtd-perf.md), not in that footer.
 - **Channel:** each probe's samples from `addProbe`. Record impulse runs a Gaussian pulse and freezes that trace for the signal chain. If `src/fdtd.js` is missing, the panel says "coming soon".
 - **Signal:** BPSK, QPSK, or a linear chirp, convolved with the identity channel or a frozen probe, then AWGN, a constellation, BER against the theory curve, and a spectrum. Demodulation uses the main tap of the impulse response as the symbol cursor, and the noise power is taken from that symbol region. A zero error count is shown as `< 1/N`.
 
@@ -29,10 +29,10 @@ python3 -m http.server 8000
 | PEC wall, normal incidence | \|R\|=0.999999 | 1 within 2% |
 | PML boundary | 2.058e-9 | reflected energy under 1% (-20 dB) |
 | Dielectric slab, eps_r = 4 | \|R\|=0.335932 | 1/3 within 3% |
-| GPU field vs CPU (A7) | UNKNOWN | rel L2 under 1e-3 after 500 steps |
-| Steps/s at 512^2 (A9) | pending | reported in the field footer, not a CI gate |
+| GPU field vs CPU (A7) | UNKNOWN on SwiftShader | rel L2 under 1e-3 after 500 steps on hardware |
+| Steps/s at 512^2 (A9) | see [docs/fdtd-perf.md](docs/fdtd-perf.md) | reported there, not gated |
 
-The 1e6-bit count is the measured BPSK run from the merged signal chain (seed 20261121, identity channel). `tests/signal.test.js` checks that run against the reference within ±20%. The FDTD rows are the numbers printed by `tests/fdtd.test.js` on main. A7 is UNKNOWN because only SwiftShader ran, so that check is not counted as a pass. A9 stays pending until the field solver's performance PR records a number.
+The 1e6-bit count is the measured BPSK run from the merged signal chain (seed 20261121, identity channel). `tests/signal.test.js` checks that run against the reference within ±20%. The FDTD rows are the numbers printed by `tests/fdtd.test.js` on main. A7 is UNKNOWN on SwiftShader. A9 is the table in [docs/fdtd-perf.md](docs/fdtd-perf.md).
 
 `node --test`
 
@@ -49,6 +49,6 @@ Run that from the repo root with Node 20 or Node 22. `npm test` is the same comm
 
 GPR mode (layered soil, buried target, B-scan radargram, benchmarked against gprMax), a validation harness exporting PNG plus an error table, then PIC particles.
 
-`tests/dev-mocks.js` is a throwaway stand-in for the smoke tests. The page does not import it. The on-page BER preview uses 8192 bits and prints `< 1/N` when that run sees no errors. The 1e6-bit gate is `tests/signal.test.js`. Steps per second are shown in the field footer and are not a CI gate.
+`tests/dev-mocks.js` is a throwaway stand-in for the smoke tests. The page does not import it. The on-page BER preview uses 8192 bits and prints `< 1/N` when that run sees no errors. The 1e6-bit gate is `tests/signal.test.js`. A9 lives in [docs/fdtd-perf.md](docs/fdtd-perf.md).
 
 no license yet
