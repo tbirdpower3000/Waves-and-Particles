@@ -156,6 +156,33 @@ void main() {
 }
 `;
 
+const PROBE = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D uField;
+uniform int uI[64];
+uniform int uJ[64];
+layout(location=0) out float o;
+void main() {
+  int q = int(gl_FragCoord.x);
+  o = texelFetch(uField, ivec2(uI[q], uJ[q]), 0).r;
+}
+`;
+
+const COLOR = `#version 300 es
+precision highp float;
+precision highp int;
+uniform sampler2D uField;
+uniform float uScale;
+layout(location=0) out vec4 o;
+void main() {
+  ivec2 ij = ivec2(gl_FragCoord.xy);
+  float v = texelFetch(uField, ij, 0).r;
+  float t = clamp(0.5 + 0.5 * v / uScale, 0.0, 1.0);
+  o = vec4(t, t, t, 1.0);
+}
+`;
+
 function f32(src) {
   const out = new Float32Array(src.length);
   out.set(src);
@@ -223,6 +250,46 @@ function makeTarget(gl, textures) {
 function bind(gl, unit, tex) {
   gl.activeTexture(gl.TEXTURE0 + unit);
   gl.bindTexture(gl.TEXTURE_2D, tex);
+}
+
+const SOFTWARE_RENDERER = /swiftshader|llvmpipe|softpipe|lavapipe|software|basic render/i;
+const HARDWARE_RENDERER =
+  /\b(nvidia|geforce|quadro|\brtx\b|radeon|\bamd\b|intel\(r\)|\biris\b|uhd graphics|hd graphics|apple gpu|apple m\d|\bmali\b|adreno|powervr)\b/i;
+
+/**
+ * Masked or unrecognized WebGL renderers are not hardware. Hardware requires
+ * the unmasked renderer string and a known non-software GPU name.
+ * @param {WebGL2RenderingContext} gl
+ */
+export function classifyWebGLRenderer(gl) {
+  const ext = gl.getExtension("WEBGL_debug_renderer_info");
+  const maskedVendor = String(gl.getParameter(gl.VENDOR) ?? "");
+  const maskedRenderer = String(gl.getParameter(gl.RENDERER) ?? "");
+  let vendor = maskedVendor;
+  let renderer = maskedRenderer;
+  let unmasked = false;
+  if (ext) {
+    const rawVendor = gl.getParameter(ext.UNMASKED_VENDOR_WEBGL);
+    const rawRenderer = gl.getParameter(ext.UNMASKED_RENDERER_WEBGL);
+    if (rawRenderer) {
+      vendor = String(rawVendor ?? "");
+      renderer = String(rawRenderer);
+      unmasked = true;
+    }
+  }
+  const blob = `${vendor} ${renderer}`;
+  const software = SOFTWARE_RENDERER.test(blob);
+  const hardware = unmasked && !software && HARDWARE_RENDERER.test(blob);
+  return {
+    vendor,
+    architecture: software ? "swiftshader" : "",
+    device: "",
+    description: renderer,
+    isFallbackAdapter: software,
+    software,
+    hardware,
+    unmasked,
+  };
 }
 
 export function createWebGL2Stepper(grid) {
@@ -312,18 +379,98 @@ export function createWebGL2Stepper(grid) {
 
   const sources = grid.sources.map((s) => ({ ...s, acc: s.acc ?? 0 }));
   const probes = grid.probes.map((p) => ({ i: p.i, j: p.j, samples: p.samples.slice() }));
+  if (sources.length > 8) throw new Error("WebGL2 stepper supports at most 8 sources");
+  if (probes.length > 64) throw new Error("WebGL2 stepper supports at most 64 probes");
   const delta = new Float32Array(n);
+  const caCpu = f32(grid.ca);
+  const cbCpu = f32(grid.cb);
+  const pecCpu = pec.slice();
   let time = grid.time;
+  let materialBytesUploaded = 0;
+  let fullFieldReads = 0;
+  const RING = 4096;
+  let head = 0;
+  let drained = 0;
+  let histTex = null;
+  let histFb = null;
+  let progProbe = null;
+  if (probes.length) {
+    histTex = makeTexture(gl, probes.length, RING, null);
+    histFb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, histFb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, histTex, 0);
+    gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+    progProbe = program(gl, PROBE);
+    gl.useProgram(progProbe);
+    gl.uniform1i(gl.getUniformLocation(progProbe, "uField"), 0);
+    const probeI = new Int32Array(64);
+    const probeJ = new Int32Array(64);
+    probes.forEach((p, q) => {
+      probeI[q] = p.i;
+      probeJ[q] = p.j;
+    });
+    gl.uniform1iv(gl.getUniformLocation(progProbe, "uI"), probeI);
+    gl.uniform1iv(gl.getUniformLocation(progProbe, "uJ"), probeJ);
+  }
 
   function draw(progId, target) {
     gl.useProgram(progId);
     gl.bindFramebuffer(gl.FRAMEBUFFER, target.fb);
+    gl.viewport(0, 0, nx, ny);
     gl.drawBuffers(target.textures.map((_, k) => gl.COLOR_ATTACHMENT0 + k));
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
 
-  function step(count = 1) {
+  function uploadRuns(ids) {
+    let p = 0;
+    while (p < ids.length) {
+      const id0 = ids[p];
+      const j = (id0 / nx) | 0;
+      let i0 = id0 - j * nx;
+      let i1 = i0;
+      while (p + 1 < ids.length && ids[p + 1] === ids[p] + 1 && ((ids[p + 1] / nx) | 0) === j) {
+        p += 1;
+        i1 += 1;
+      }
+      const w = i1 - i0 + 1;
+      const start = j * nx + i0;
+      const put = (tex, cpu) => {
+        gl.bindTexture(gl.TEXTURE_2D, tex);
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, i0, j, w, 1, gl.RED, gl.FLOAT, cpu.subarray(start, start + w));
+      };
+      put(ca, caCpu);
+      put(cb, cbCpu);
+      put(pecTex, pecCpu);
+      materialBytesUploaded += w * 4 * 3;
+      p += 1;
+    }
+  }
+
+  function syncMaterials(next = grid) {
+    const bits = new Float32Array(1);
+    const asF32 = (value) => {
+      bits[0] = value;
+      return bits[0];
+    };
+    const changed = [];
+    for (let id = 0; id < n; id++) {
+      const flag = next.pec[id] ? 1 : 0;
+      const caNext = asF32(next.ca[id]);
+      const cbNext = asF32(next.cb[id]);
+      if (caCpu[id] !== caNext || cbCpu[id] !== cbNext || pecCpu[id] !== flag) {
+        caCpu[id] = caNext;
+        cbCpu[id] = cbNext;
+        pecCpu[id] = flag;
+        changed.push(id);
+      }
+    }
+    uploadRuns(changed);
+    return changed.length;
+  }
+
+  function runSteps(count) {
     const nStep = count | 0;
+    syncMaterials();
     for (let s = 0; s < nStep; s++) {
       time += grid.dt;
       delta.fill(0);
@@ -370,20 +517,61 @@ export function createWebGL2Stepper(grid) {
       hy.reverse();
 
       if (probes.length) {
-        gl.bindFramebuffer(gl.FRAMEBUFFER, field[0].fb);
-        gl.readBuffer(gl.COLOR_ATTACHMENT0);
-        const px = new Float32Array(1);
-        for (let q = 0; q < probes.length; q++) {
-          const pr = probes[q];
-          gl.readPixels(pr.i, pr.j, 1, 1, gl.RED, gl.FLOAT, px);
-          pr.samples.push(px[0]);
-        }
+        const row = head % RING;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, histFb);
+        gl.viewport(0, row, probes.length, 1);
+        gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+        bind(gl, 0, field[0].textures[0]);
+        gl.useProgram(progProbe);
+        gl.drawArrays(gl.TRIANGLES, 0, 3);
+        gl.viewport(0, 0, nx, ny);
+        head += 1;
       }
     }
+  }
+
+  function drainProbes() {
+    if (!probes.length || drained === head) return;
+    const pending = head - drained;
+    const readRange = (row, count) => {
+      const buf = new Float32Array(count * probes.length);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, histFb);
+      gl.readBuffer(gl.COLOR_ATTACHMENT0);
+      gl.readPixels(0, row, probes.length, count, gl.RED, gl.FLOAT, buf);
+      for (let s = 0; s < count; s++) {
+        for (let q = 0; q < probes.length; q++) probes[q].samples.push(buf[s * probes.length + q]);
+      }
+    };
+    let left = pending;
+    let row = drained % RING;
+    while (left > 0) {
+      const count = Math.min(left, RING - row);
+      readRange(row, count);
+      left -= count;
+      row = 0;
+    }
+    drained = head;
+  }
+
+  function step(count = 1) {
+    runSteps(count | 0);
+    drainProbes();
+    return Promise.resolve();
+  }
+
+  function kick(count = 1) {
+    runSteps(count | 0);
+    return Promise.resolve();
+  }
+
+  function idle() {
+    drainProbes();
+    gl.finish();
     return Promise.resolve();
   }
 
   function readField() {
+    fullFieldReads += 1;
     const out = new Float32Array(n);
     gl.bindFramebuffer(gl.FRAMEBUFFER, field[0].fb);
     gl.readBuffer(gl.COLOR_ATTACHMENT0);
@@ -391,28 +579,83 @@ export function createWebGL2Stepper(grid) {
     return Promise.resolve(out);
   }
 
-  const debugInfo = gl.getExtension("WEBGL_debug_renderer_info");
-  const vendor = String(
-    (debugInfo && gl.getParameter(debugInfo.UNMASKED_VENDOR_WEBGL)) ||
-      gl.getParameter(gl.VENDOR) ||
-      "",
-  );
-  const renderer = String(
-    (debugInfo && gl.getParameter(debugInfo.UNMASKED_RENDERER_WEBGL)) ||
-      gl.getParameter(gl.RENDERER) ||
-      "",
-  );
-  const software = /swiftshader|llvmpipe|softpipe|software/i.test(`${vendor} ${renderer}`);
+  function createView(viewCanvas, opts = {}) {
+    const scale = opts.scale ?? 1;
+    const stepsPerFrame = opts.stepsPerFrame ?? 1;
+    const colorTex = gl.createTexture();
+    gl.bindTexture(gl.TEXTURE_2D, colorTex);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, nx, ny, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    const colorFb = gl.createFramebuffer();
+    gl.bindFramebuffer(gl.FRAMEBUFFER, colorFb);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, colorTex, 0);
+    const progColor = program(gl, COLOR);
+    gl.useProgram(progColor);
+    gl.uniform1i(gl.getUniformLocation(progColor, "uField"), 0);
+    gl.uniform1f(gl.getUniformLocation(progColor, "uScale"), scale);
+    if (viewCanvas) {
+      viewCanvas.width = nx;
+      viewCanvas.height = ny;
+    }
+
+    function present() {
+      gl.bindFramebuffer(gl.FRAMEBUFFER, colorFb);
+      gl.viewport(0, 0, nx, ny);
+      gl.drawBuffers([gl.COLOR_ATTACHMENT0]);
+      bind(gl, 0, field[0].textures[0]);
+      gl.useProgram(progColor);
+      gl.drawArrays(gl.TRIANGLES, 0, 3);
+      if (viewCanvas && viewCanvas !== canvas) {
+        const ctx = viewCanvas.getContext("2d");
+        if (ctx) ctx.drawImage(canvas, 0, 0);
+      }
+    }
+
+    function frame(count) {
+      runSteps(count == null ? stepsPerFrame : count | 0);
+      present();
+    }
+
+    function readDrawn() {
+      const pixels = new Uint8Array(nx * ny * 4);
+      gl.bindFramebuffer(gl.FRAMEBUFFER, colorFb);
+      gl.readPixels(0, 0, nx, ny, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      return Promise.resolve(new Uint8ClampedArray(pixels));
+    }
+
+    return {
+      backend: "webgl2",
+      canvas: viewCanvas || canvas,
+      stepsPerFrame,
+      scale,
+      get fullFieldReads() {
+        return fullFieldReads;
+      },
+      frame,
+      idle,
+      readDrawn,
+      readProbes: () => probes.map((p) => ({ i: p.i, j: p.j, samples: p.samples })),
+      destroy() {},
+    };
+  }
+
+  const adapter = classifyWebGLRenderer(gl);
   return {
     backend: "webgl2",
-    adapter: {
-      vendor,
-      architecture: software ? "swiftshader" : "",
-      device: "",
-      description: renderer,
-      isFallbackAdapter: software,
+    adapter,
+    probeStream: null,
+    get fullFieldReads() {
+      return fullFieldReads;
+    },
+    get materialBytesUploaded() {
+      return materialBytesUploaded;
     },
     step,
+    kick,
+    idle,
+    syncMaterials,
+    createView,
     readField,
     readProbes: () => probes.map((p) => ({ i: p.i, j: p.j, samples: p.samples })),
     destroy() {

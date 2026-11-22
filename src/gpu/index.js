@@ -1,3 +1,5 @@
+import { step as stepCpu } from "../fdtd.js";
+import { fieldToImage } from "./color.js";
 import { createWebGPUStepper } from "./webgpu.js";
 import { createWebGL2Stepper } from "./webgl2.js";
 
@@ -49,4 +51,77 @@ export async function createGpuStepper(grid, opts = {}) {
     throw error;
   }
   throw new Error("UNKNOWN: no GPU backend");
+}
+
+function cpuView(canvas, grid, opts = {}) {
+  const stepsPerFrame = opts.stepsPerFrame ?? 1;
+  const scale = opts.scale ?? 1;
+  canvas.width = grid.nx;
+  canvas.height = grid.ny;
+  let last = fieldToImage(grid.field, grid.nx, grid.ny, scale);
+  const paint = () => {
+    last = fieldToImage(grid.field, grid.nx, grid.ny, scale);
+    const ctx = canvas.getContext?.("2d");
+    if (ctx && typeof ctx.putImageData === "function") {
+      const image =
+        typeof ImageData === "function"
+          ? new ImageData(last, grid.nx, grid.ny)
+          : { data: last, width: grid.nx, height: grid.ny };
+      ctx.putImageData(image, 0, 0);
+    }
+  };
+  return {
+    backend: "cpu",
+    adapter: null,
+    probeStream: null,
+    fullFieldReads: 0,
+    materialBytesUploaded: 0,
+    canvas,
+    stepsPerFrame,
+    scale,
+    frame(count) {
+      stepCpu(grid, count == null ? stepsPerFrame : count | 0);
+      paint();
+    },
+    idle() {
+      return Promise.resolve();
+    },
+    readDrawn() {
+      return Promise.resolve(last.slice());
+    },
+    readProbes: () => grid.probes.map((p) => ({ i: p.i, j: p.j, samples: p.samples.slice() })),
+    syncMaterials() {
+      return 0;
+    },
+    destroy() {},
+  };
+}
+
+/**
+ * Draw the field from GPU memory. `frame` submits steps and a colormap
+ * pass and does not read the field back. With no adapter, the same calls
+ * step the CPU grid and paint it.
+ *
+ * @param {object} canvas
+ * @param {object} grid from createGrid
+ * @param {{ backend?: 'webgpu' | 'webgl2' | 'auto', stepsPerFrame?: number, scale?: number }} [opts]
+ */
+export async function createGpuView(canvas, grid, opts = {}) {
+  let stepper = null;
+  try {
+    stepper = await createGpuStepper(grid, { backend: opts.backend });
+  } catch (err) {
+    const message = String(err?.message || err);
+    if (!message.includes("UNKNOWN: no GPU backend")) throw err;
+    console.log(`GPU auto-fallback: ${message}; drawing on the CPU`);
+  }
+  if (!stepper?.createView) return cpuView(canvas, grid, opts);
+  const view = stepper.createView(canvas, opts);
+  view.adapter = stepper.adapter;
+  view.probeStream = stepper.probeStream ?? null;
+  view.syncMaterials = (next) => stepper.syncMaterials(next ?? grid);
+  Object.defineProperty(view, "materialBytesUploaded", {
+    get: () => stepper.materialBytesUploaded,
+  });
+  return view;
 }
