@@ -391,8 +391,17 @@ export function createWebGL2Stepper(grid) {
     return Promise.resolve(out);
   }
 
+  const renderer = String(gl.getParameter(gl.RENDERER) ?? "");
+  const vendor = String(gl.getParameter(gl.VENDOR) ?? "");
   return {
     backend: "webgl2",
+    adapter: {
+      vendor,
+      architecture: "",
+      device: "",
+      description: renderer,
+      isFallbackAdapter: /swiftshader|llvmpipe|softpipe|software/i.test(`${vendor} ${renderer}`),
+    },
     step,
     readField,
     readProbes: () => probes.map((p) => ({ i: p.i, j: p.j, samples: p.samples })),
